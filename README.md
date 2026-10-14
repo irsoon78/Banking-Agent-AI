@@ -24,12 +24,14 @@ Banking-Agent-AI/
 │   ├── db.py                   # 连接管理、建表、演示数据、金额格式化
 │   └── banking.db              # 首次启动自动生成，不包含在源码压缩包中
 ├── security/
-│   ├── __init__.py             # 导出 RiskEngine
-│   └── risk_engine.py          # 独立于 LLM 的确定性风险分类
+│   ├── __init__.py             # 导出 RiskEngine 与 PermissionController
+│   ├── risk_engine.py          # 独立于 LLM 的确定性风险分类
+│   └── permission.py           # 将风险等级映射为执行权限策略
 ├── tests/
 │   ├── __init__.py             # Python 包标记
 │   ├── test_banking.py         # 临时数据库、事务与模拟 LLM/SDK 测试
-│   └── test_risk_engine.py     # 风险等级、阈值、无效输入与扩展操作测试
+│   ├── test_risk_engine.py     # 风险等级、阈值、无效输入与扩展操作测试
+│   └── test_permission.py      # 权限策略及 Risk Engine 组合测试
 ├── .env.example               # 环境变量示例
 ├── .gitignore                 # 忽略密钥、虚拟环境、缓存和数据库
 ├── AGENTS.md                  # 稳定基线、V0.2 分支与提交规则
@@ -287,7 +289,7 @@ result = engine.evaluate(operation="transfer", amount=500)
 
 未来接入时的流程为：用户请求 → Agent 识别工具和参数 → Risk Engine 根据实际待执行操作判断风险 → 执行策略处理自动执行、确认或强验证 → 工具执行。风险等级由 Python 规则确定，不能由模型自行选择。
 
-**本阶段尚未将 Risk Engine 接入 Agent 或工具执行入口，也未实现用户确认和强验证。现有 `/chat` 的模拟转账行为保持不变。** 本模块处于 `feature/security-v0.2` 的待审查修改中，人工审查前不提交 commit。
+**V0.2.1 尚未将 Risk Engine 接入 Agent 或工具执行入口，也未实现用户确认和强验证。现有 `/chat` 的模拟转账行为保持不变。** 本模块已在 `feature/security-v0.2` 提交，commit 为 `78c9f7d`。
 
 仅运行风险模块测试：
 
@@ -295,4 +297,44 @@ result = engine.evaluate(operation="transfer", amount=500)
 .\.venv\Scripts\python.exe -m unittest tests.test_risk_engine -v
 ```
 
-V0.2.1 基础模块已在 Windows / Python 3.14.7 下验证：新增 13 个风险测试与已有 19 个银行功能测试，共 **32 个测试全部通过**。既有业务代码未修改，修改未暂存、未提交，等待人工审查。
+V0.2.1 基础模块已在 Windows / Python 3.14.7 下验证：新增 13 个风险测试与已有 19 个银行功能测试，共 **32 个测试全部通过**。既有业务代码未修改。
+
+## 11. V0.2.2 Permission System
+
+`PermissionController.decide(operation, risk_level)` 消费服务端 Risk Engine 的风险结果，返回执行策略。它不依赖 LLM、FastAPI 或 SQLite，不重新判断金额，也不执行银行工具。
+
+| 风险等级 | action | require_confirmation | require_verification |
+| --- | --- | --- | --- |
+| `green` | `allow` | `false` | `false` |
+| `yellow` | `pending_confirmation` | `true` | `false` |
+| `red` | `require_verification` | `false` | `true` |
+
+空白或非法操作参数、未知或非法风险等级保守返回 `require_verification`。输入无效不会因后续验证而自动成为有效业务请求，调用方仍须校验操作和参数。
+
+组合调用示例：
+
+```python
+from security import PermissionController, RiskEngine
+
+operation = "transfer"
+risk = RiskEngine().evaluate(operation=operation, amount=500)
+decision = PermissionController().decide(operation, risk["risk_level"])
+# {"action": "pending_confirmation",
+#  "require_confirmation": True, "require_verification": False}
+```
+
+调用方必须使用 Risk Engine 根据实际操作计算出的风险等级，不能接受 LLM 或用户自行声明的 `risk_level`。当前 Permission Controller 校验 operation 是否为非空字符串，已知操作识别及未知操作的保守分类由 Risk Engine 负责。
+
+安全模块的组合流程是：Agent 识别意图和工具参数 → Risk Engine 判断风险 → Permission Controller 返回执行策略 → 后续执行层处理策略。执行层只有收到 `allow` 才能直接调用工具；黄色和红色策略均不能直接执行。
+
+本阶段只实现权限决策模块及组合测试，**未接入现有 Agent 执行入口，`/chat` 的行为保持 V0.1.2 原样**。尚未实现确认后的恢复执行或真实身份验证。后续可由执行层接入人脸、短信验证码、U 盾等验证方式，并扩展理财申购、卡片挂失等操作策略。
+
+仅运行权限模块测试：
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest tests.test_permission -v
+```
+
+V0.2.2 修改保留在 `feature/security-v0.2`，人工审查前不暂存、不提交 commit。
+
+V0.2.2 已在 Windows / Python 3.14.7 下验证：新增 13 个权限测试、已有 13 个风险测试及 19 个银行功能测试，共 **45 个测试全部通过**。既有 Agent、工具、DeepSeek 连接和数据库实现未修改。
