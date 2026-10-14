@@ -64,6 +64,32 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_bills_account_id
             ON bills(account_id, id DESC)
         """)
+        # 不设账户外键，以便记录不存在账户的请求和失败尝试。
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                request_id TEXT NOT NULL,
+                action_id TEXT,
+                event_type TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                user_request TEXT NOT NULL,
+                operation TEXT,
+                risk_level TEXT,
+                permission_action TEXT,
+                confirmation_status TEXT NOT NULL,
+                execution_result TEXT NOT NULL,
+                details TEXT NOT NULL DEFAULT '{}'
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_audit_account_id
+            ON audit_logs(account_id, id DESC)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_audit_request_id
+            ON audit_logs(request_id, id)
+        """)
         for account_id, owner, cents in (
             ("1001", "张三", 1_000_000),
             ("1002", "李四", 500_000),

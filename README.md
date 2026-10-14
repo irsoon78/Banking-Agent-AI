@@ -27,13 +27,15 @@ Banking-Agent-AI/
 │   ├── __init__.py             # 导出风险、权限和确认管理器
 │   ├── risk_engine.py          # 独立于 LLM 的确定性风险分类
 │   ├── permission.py           # 将风险等级映射为执行权限策略
+│   ├── audit.py                # SQLite 审计事件写入和历史查询
 │   └── confirmation.py         # 待确认任务保存、确认、取消与权限调度
 ├── tests/
 │   ├── __init__.py             # Python 包标记
 │   ├── test_banking.py         # 临时数据库、事务与模拟 LLM/SDK 测试
 │   ├── test_risk_engine.py     # 风险等级、阈值、无效输入与扩展操作测试
 │   ├── test_permission.py      # 权限策略及 Risk Engine 组合测试
-│   └── test_confirmation.py    # 确认流程、并发和 HTTP/SDK/SQLite 测试
+│   ├── test_confirmation.py    # 确认流程、并发和 HTTP/SDK/SQLite 测试
+│   └── test_audit.py           # 审计链、持久化与写入故障测试
 ├── .env.example               # 环境变量示例
 ├── .gitignore                 # 忽略密钥、虚拟环境、缓存和数据库
 ├── AGENTS.md                  # 稳定基线、V0.2 分支与提交规则
@@ -181,6 +183,7 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:8000/chat' -Method Post -ContentType 'a
 | `POST /chat/secure` | 自然语言风险、权限及黄色确认入口 | 是 |
 | `POST /confirm` | 确认指定账户的待执行任务 | 否 |
 | `POST /cancel` | 取消指定账户的待执行任务 | 否 |
+| `GET /audit/1001` | 查询该账户的持久化审计事件 | 否 |
 | `GET /accounts/1001/balance` | 直接调用余额工具，便于验证 | 否 |
 | `GET /accounts/1001/bills?limit=10` | 直接调用账单工具，支持 1–100 条 | 否 |
 
@@ -428,6 +431,55 @@ Content-Type: application/json
 
 账户归属检查基于 Demo 请求中的 `account_id`，不代表已经实现登录认证。红色操作仍需后续强验证模块；不能通过 `/confirm` 放行。LLM 的工具列表没有确认或取消工具，模型自行生成的确认字段也不会被接受。
 
-V0.2.3 改动仅保留在 `feature/security-v0.2`，人工审查前不暂存、不提交 commit。
+V0.2.3 已在 `feature/security-v0.2` 提交，commit 为 `8a3293b`，对应标签 `v0.2.3`。
 
 已在 Windows / Python 3.14.7 下运行完整测试：新增确认流程测试 24 个、既有测试 45 个，共 **69 个全部通过**。测试使用模拟 LLM 和临时数据库，不访问真实 DeepSeek 或修改用户数据库。
+
+## 13. V0.2.4 Audit Log
+
+服务启动时在现有 `BANK_DB_PATH` 数据库中自动创建 `audit_logs` 表。`accounts`、`bills` 的结构和现有数据保留。审计事件写入后提交到 SQLite，服务重启及重新初始化数据库不会清空日志。
+
+每条事件包含 `timestamp`（SQLite 生成的 UTC 时间）、`account_id`、`user_request`、`operation`、`risk_level`、`permission_action`、`confirmation_status`、`execution_result`。尚未产生的操作、风险和权限值为 `null`，不会由模型补写。
+
+额外字段包括自增 `id`、`event_type`、`request_id`、`action_id` 和 JSON `details`。数据库建立账户/序号索引和请求/序号索引。账户字段不设置外键，以便记录不存在账户的失败请求。`AuditLogger` 只提供追加及查询接口，不提供日志修改或删除接口。
+
+记录节点包括：
+
+- `request_received`：已校验的聊天请求或账户查询进入服务；LLM 未配置或调用失败也保留初始请求。
+- `risk_evaluated`、`permission_decided`：代码计算的风险、原因和权限策略。
+- `pending_created`：待确认任务及参数快照。
+- `confirmation_confirmed`、`confirmation_cancelled`、`confirmation_rejected`：代码处理的确认、取消和拒绝结果。
+- `tool_execution_started`、`tool_executed`：执行前记录及工具返回的 `success`、`failed` 或结果不确定时的 `unknown`。
+- `request_returned`、`request_failed`：请求返回状态或服务错误。请求层事件的执行字段可为 `not_applicable`，实际工具结果以 `tool_executed` 为准。
+
+```text
+请求 → request_received → Risk Engine → risk_evaluated
+     → Permission Controller → permission_decided
+     → pending_created → confirmed / cancelled
+     → 原工具 → tool_executed
+以上事件由代码追加到同一个 SQLite 数据库
+```
+
+同一次聊天请求的决策事件共用 `request_id`。黄色任务保存原请求审计上下文，后续确认或取消继续使用原 `request_id`、`user_request` 和 `action_id`；确认接口本身的入站请求也另行记录，通过 `action_id` 关联。安全聊天和确认响应提供原流程的 `request_id`，可用于筛选完整链路。
+
+### 查询
+
+```http
+GET /audit/1001?limit=100&offset=0
+```
+
+返回结构为 `{"account_id":"1001","logs":[...],"limit":100,"offset":0}`，事件按 `id` 倒序排列。`limit` 支持 1–500，`offset` 为非负整数；可加 `request_id=实际请求编号` 筛选同一次流程。不存在历史的账户返回空数组。查询不需要 LLM Key，也不会反向生成新的审计事件。
+
+### 执行与故障边界
+
+`/chat/secure` 执行实际权限流程。兼容入口 `/chat` 保留原来的直接执行行为，审计仍记录真实风险和建议权限；跳过黄色确认或红色验证时明确记为 `confirmation_status: legacy_bypass`，不伪装成已经确认或验证。
+
+关键执行前审计不可用时返回 HTTP 503，不执行工具；确认任务未被领取，恢复后仍可确认。工具已执行后若末尾审计失败，返回真实工具结果并提示 `audit_warning`，不将成功转账改为失败，也不自动重试。兼容聊天响应会在 `reply` 中显示提示。
+
+工具交易与审计事件使用独立事务。极端情况下进程在转账提交后、结果日志写入前退出，可能只保留 `tool_execution_started`；不能据此认定转账失败，应核对原账单及交易编号。本阶段未实现交易和审计的跨表原子提交。
+
+审计记录持久化，待确认任务仍遵循 V0.2.3 的进程内存生命周期；服务重启后旧日志可查询，但不能靠日志自动恢复或执行旧任务。日志包含请求文本和业务结果，不记录 SDK 配置、请求认证头或 API Key。查询接口沿用 Demo 的账户编号模式，尚未新增登录认证或日志访问权限系统。
+
+V0.2.4 修改保留在 `feature/security-v0.2`，人工审查前不暂存、不提交 commit。
+
+Windows / Python 3.14.7 下新增 19 个审计测试与原有 69 个测试，共 **88 个全部通过**。覆盖创建、账户查询、完整确认链、取消/失败、独立进程及服务重启持久化、执行前后审计故障；测试只使用临时数据库与模拟 SDK。
