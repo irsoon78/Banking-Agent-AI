@@ -28,6 +28,7 @@ Banking-Agent-AI/
 │   └── test_banking.py         # 临时数据库、事务与模拟 LLM/SDK 测试
 ├── .env.example               # 环境变量示例
 ├── .gitignore                 # 忽略密钥、虚拟环境、缓存和数据库
+├── AGENTS.md                  # 稳定基线、V0.2 分支与提交规则
 ├── requirements.txt           # 运行及测试依赖；SQLite 使用 Python 标准库
 └── README.md                  # 本文档
 ```
@@ -236,3 +237,23 @@ macOS / Linux：
 
 要重新从初始数据演示，停止服务后将 `.env` 中 `BANK_DB_PATH` 改为新文件，例如 `database/demo2.db`，再启动服务。
 旧数据库的余额和账单会保留。
+
+## 9. 稳定版本与 Git 开发流程
+
+当前稳定版本为 **V0.1.2**，状态为“首次 Agent 闭环成功”。项目原先没有 Git 仓库，现已将当前源码保存为 `main` 初始提交，并创建标签 `v0.1.2`。
+
+`main` 和 `v0.1.2` 保留稳定基线；后续所有 V0.2 修改均在 **`feature/security-v0.2`** 分支完成。不要在 `main` 上继续提交或重写历史，也不要移动稳定标签。
+
+修改前先检查：
+
+```bash
+git status --short --branch
+git diff
+git diff --cached
+```
+
+每完成一个明确功能，检查暂存文件与 diff、排除密钥和运行文件、运行相关测试，然后单独 commit。提交格式为 `feat: 描述`、`fix: 描述`、`refactor: 描述`。
+
+`.env`、`.venv`、数据库和缓存已配置为忽略；`.env.example` 仅允许空值或占位符。忽略规则不能防止源码中出现 API Key，因此每次提交仍须检查暂存内容。
+
+如果修改导致已有 V0.1 功能失败，立即停止后续开发并报告问题。完整规则见 [AGENTS.md](AGENTS.md)。本次仅建立 Git 基线和开发流程，未添加 V0.2 业务功能。
