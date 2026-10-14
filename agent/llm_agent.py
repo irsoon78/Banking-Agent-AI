@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from typing import Callable
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -55,6 +56,14 @@ class AgentError(Exception):
         self.status_code = status_code
 
 
+class AgentPause(Exception):
+    """由服务端执行策略暂停操作，模型不能生成或批准此异常。"""
+
+    def __init__(self, response: dict):
+        super().__init__(response["message"])
+        self.response = response
+
+
 def execute_tool(name: str, raw_arguments: str, account_id: str) -> dict:
     """只调度允许的函数，校验参数；当前账户由 API 注入。"""
     argument_model = ARGUMENT_MODELS.get(name)
@@ -102,9 +111,10 @@ def make_response(records: list[dict], status: str, notice: str = "") -> dict:
 
 
 class BankingAgent:
-    def __init__(self, client: AsyncOpenAI, model: str):
+    def __init__(self, client: AsyncOpenAI, model: str, tool_executor: Callable = execute_tool):
         self.client = client
         self.model = model
+        self.tool_executor = tool_executor
 
     async def run(self, message: str, account_id: str) -> dict:
         messages = [
@@ -142,7 +152,11 @@ class BankingAgent:
                 return make_response(records, "partial" if records else "failed", "模型返回不支持的工具调用组合，本轮工具未执行。")
             call = calls[0]
             messages.append(assistant.model_dump(exclude_none=True))
-            result = await asyncio.to_thread(execute_tool, call.function.name, call.function.arguments, account_id)
+            try:
+                result = await asyncio.to_thread(self.tool_executor, call.function.name, call.function.arguments, account_id)
+            except AgentPause as pause:
+                response = make_response(records, pause.response["status"], pause.response["message"])
+                return {**response, **pause.response}
             records.append({"tool": call.function.name, "result": result})
             messages.append({
                 "role": "tool",

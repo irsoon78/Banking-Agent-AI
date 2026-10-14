@@ -24,14 +24,16 @@ Banking-Agent-AI/
 │   ├── db.py                   # 连接管理、建表、演示数据、金额格式化
 │   └── banking.db              # 首次启动自动生成，不包含在源码压缩包中
 ├── security/
-│   ├── __init__.py             # 导出 RiskEngine 与 PermissionController
+│   ├── __init__.py             # 导出风险、权限和确认管理器
 │   ├── risk_engine.py          # 独立于 LLM 的确定性风险分类
-│   └── permission.py           # 将风险等级映射为执行权限策略
+│   ├── permission.py           # 将风险等级映射为执行权限策略
+│   └── confirmation.py         # 待确认任务保存、确认、取消与权限调度
 ├── tests/
 │   ├── __init__.py             # Python 包标记
 │   ├── test_banking.py         # 临时数据库、事务与模拟 LLM/SDK 测试
 │   ├── test_risk_engine.py     # 风险等级、阈值、无效输入与扩展操作测试
-│   └── test_permission.py      # 权限策略及 Risk Engine 组合测试
+│   ├── test_permission.py      # 权限策略及 Risk Engine 组合测试
+│   └── test_confirmation.py    # 确认流程、并发和 HTTP/SDK/SQLite 测试
 ├── .env.example               # 环境变量示例
 ├── .gitignore                 # 忽略密钥、虚拟环境、缓存和数据库
 ├── AGENTS.md                  # 稳定基线、V0.2 分支与提交规则
@@ -176,6 +178,9 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:8000/chat' -Method Post -ContentType 'a
 | --- | --- | --- |
 | `GET /health` | 服务状态和 LLM 是否已配置 | 否 |
 | `POST /chat` | 自然语言工具调用入口 | 是 |
+| `POST /chat/secure` | 自然语言风险、权限及黄色确认入口 | 是 |
+| `POST /confirm` | 确认指定账户的待执行任务 | 否 |
+| `POST /cancel` | 取消指定账户的待执行任务 | 否 |
 | `GET /accounts/1001/balance` | 直接调用余额工具，便于验证 | 否 |
 | `GET /accounts/1001/bills?limit=10` | 直接调用账单工具，支持 1–100 条 | 否 |
 
@@ -335,6 +340,94 @@ decision = PermissionController().decide(operation, risk["risk_level"])
 .\.venv\Scripts\python.exe -m unittest tests.test_permission -v
 ```
 
-V0.2.2 修改保留在 `feature/security-v0.2`，人工审查前不暂存、不提交 commit。
+V0.2.2 已在 `feature/security-v0.2` 提交，commit 为 `85e11b8`。
 
 V0.2.2 已在 Windows / Python 3.14.7 下验证：新增 13 个权限测试、已有 13 个风险测试及 19 个银行功能测试，共 **45 个测试全部通过**。既有 Agent、工具、DeepSeek 连接和数据库实现未修改。
+
+## 12. V0.2.3 Confirmation Flow
+
+新增 `/chat/secure` 接入 Risk Engine、Permission Controller 和 `PendingActionManager`，提供黄色操作的确认流程。原有 `/chat` 保留 V0.1.2 直接执行行为；测试确认流程时请使用 **`/chat/secure`**。
+
+```text
+POST /chat/secure → 原 Agent 识别工具和参数 → 参数校验 → Risk Engine → Permission Controller
+  green  → 调用原工具
+  yellow → 保存待确认任务，返回 pending 和 action_id（此时不扣款）
+  red    → 返回 require_verification（不执行，也不创建可确认任务）
+
+POST /confirm → 校验账户及 action_id → 原子领取任务 → 调用原工具 → 返回工具结果
+POST /cancel  → 校验账户及 action_id → 删除任务，不执行工具
+```
+
+### 创建待确认转账
+
+```http
+POST /chat/secure
+Content-Type: application/json
+```
+
+```json
+{"account_id":"1001","message":"给账户1002模拟转账500元"}
+```
+
+返回的核心字段如下；`action_id` 和 `created_at` 在运行时生成：
+
+```json
+{
+  "status": "pending",
+  "message": "转账 500 元，需要用户确认，尚未执行。",
+  "risk_level": "yellow",
+  "action_id": "运行时生成的任务编号",
+  "pending_action": {
+    "action_id": "同一个任务编号",
+    "account_id": "1001",
+    "action": "transfer_money",
+    "params": {"to_account_id": "1002", "amount": "500"},
+    "risk_level": "yellow",
+    "created_at": "运行时生成的UTC时间"
+  }
+}
+```
+
+响应同时包含 Agent 的 `reply` 和已完成查询的 `tool_results`。转账参数采用原工具的账户编号和金额字符串；只有收款人姓名时仍需补充编号，不猜测账户。
+
+### 确认或取消
+
+将收到的真实任务编号填入请求。确认无需再次调用 LLM：
+
+```http
+POST /confirm
+Content-Type: application/json
+```
+
+```json
+{"account_id":"1001","action_id":"收到的真实任务编号","confirmed":true}
+```
+
+确认后原转账工具重新执行参数、账户和余额校验；成功返回 `status: completed`、`result` 和根据工具结果生成的 `reply`。工具拒绝交易时返回 `status: failed` 和原工具错误。
+
+取消请求：
+
+```http
+POST /cancel
+Content-Type: application/json
+```
+
+```json
+{"account_id":"1001","action_id":"收到的真实任务编号"}
+```
+
+也可以向 `/confirm` 发送 `confirmed: false` 取消。取消返回 `status: cancelled`，不会执行工具。未知、已消费或其他账户的任务返回 HTTP 404；非法请求参数返回 422。确认与取消接口不依赖 LLM Key。
+
+### 管理器与阶段范围
+
+`PendingActionManager(executor)` 接收服务端固定注册的执行器，提供 `prepare_action`、`create_pending_action`、`get_pending_action`、`confirm_action`、`cancel_action`。管理器独立于 LLM、HTTP 和 SQLite；保存账户、操作、参数快照、风险等级、UTC 创建时间及唯一任务编号。
+
+任务在执行前原子领取并移出待确认队列，同一个编号最多调用一次执行器。重复或并发确认不会重复扣款；领取后的操作不能再取消。执行器返回业务失败时任务也被消费；意外异常返回 `execution_unknown`，不能假定资金未变动，应先查询账单，管理器不自动重试。
+
+本阶段待确认数据只保存在**当前服务进程内存**，重启会丢失，服务请保持一个 worker。多个任务编号及固定执行器接口为后续多步骤任务、人工接管和独立红色验证流程留出扩展位置；未实现持久化、过期策略或真实身份验证。
+
+账户归属检查基于 Demo 请求中的 `account_id`，不代表已经实现登录认证。红色操作仍需后续强验证模块；不能通过 `/confirm` 放行。LLM 的工具列表没有确认或取消工具，模型自行生成的确认字段也不会被接受。
+
+V0.2.3 改动仅保留在 `feature/security-v0.2`，人工审查前不暂存、不提交 commit。
+
+已在 Windows / Python 3.14.7 下运行完整测试：新增确认流程测试 24 个、既有测试 45 个，共 **69 个全部通过**。测试使用模拟 LLM 和临时数据库，不访问真实 DeepSeek 或修改用户数据库。
