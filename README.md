@@ -4,12 +4,17 @@
 LLM 使用 **DeepSeek 官方兼容接口**，Python 调用仍使用 **OpenAI SDK**。
 支持自然语言查询余额、查询最近账单和模拟转账。没有自定义前端、登录权限系统、MCP 或真实银行接入。
 
+**比赛 Demo 推荐使用 `/chat/secure`、`/confirm`、`/cancel`、`/audit/{account_id}`。旧 `/chat` 仅用于兼容测试，仍保留直接执行行为，不能作为比赛页面的安全入口。** V0.3.0 响应契约见第 14 节。
+
 ## 1. 项目结构与文件职责
 
 ```text
 Banking-Agent-AI/
 ├── main.py                    # FastAPI、配置加载、启动初始化、HTTP 接口
 ├── deepseek_client.py         # DeepSeek HTTP 协议兼容配置，保留本地校验
+├── api/
+│   ├── __init__.py             # HTTP 层包标记
+│   └── responses.py            # Demo 响应模型、请求决策收集和统一错误处理
 ├── agent/
 │   ├── __init__.py             # Python 包标记
 │   ├── llm_agent.py            # 工具描述、参数校验、调用循环、工具结果回复
@@ -35,7 +40,8 @@ Banking-Agent-AI/
 │   ├── test_risk_engine.py     # 风险等级、阈值、无效输入与扩展操作测试
 │   ├── test_permission.py      # 权限策略及 Risk Engine 组合测试
 │   ├── test_confirmation.py    # 确认流程、并发和 HTTP/SDK/SQLite 测试
-│   └── test_audit.py           # 审计链、持久化与写入故障测试
+│   ├── test_audit.py           # 审计链、持久化与写入故障测试
+│   └── test_demo_api.py        # 结构化决策、确认响应、错误及兼容性测试
 ├── .env.example               # 环境变量示例
 ├── .gitignore                 # 忽略密钥、虚拟环境、缓存和数据库
 ├── AGENTS.md                  # 稳定基线、V0.2 分支与提交规则
@@ -100,7 +106,7 @@ macOS / Linux 启动：
 .venv/bin/python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-访问 [Swagger 接口文档](http://127.0.0.1:8000/docs)，可以直接通过 `POST /chat` 的 **Try it out** 测试。
+访问 [Swagger 接口文档](http://127.0.0.1:8000/docs)，比赛流程通过 `POST /chat/secure` 的 **Try it out** 测试；下文旧 `/chat` 示例用于兼容测试。
 不填写 Key 也可以启动服务并调用健康检查、直连余额与账单接口；自然语言 `/chat` 会返回 503 配置提示。
 
 ## 3. 演示账户
@@ -480,6 +486,130 @@ GET /audit/1001?limit=100&offset=0
 
 审计记录持久化，待确认任务仍遵循 V0.2.3 的进程内存生命周期；服务重启后旧日志可查询，但不能靠日志自动恢复或执行旧任务。日志包含请求文本和业务结果，不记录 SDK 配置、请求认证头或 API Key。查询接口沿用 Demo 的账户编号模式，尚未新增登录认证或日志访问权限系统。
 
-V0.2.4 修改保留在 `feature/security-v0.2`，人工审查前不暂存、不提交 commit。
+V0.2.4 已在 `feature/security-v0.2` 提交，commit 为 `0bbbf82`，对应标签 `v0.2.4`。
 
 Windows / Python 3.14.7 下新增 19 个审计测试与原有 69 个测试，共 **88 个全部通过**。覆盖创建、账户查询、完整确认链、取消/失败、独立进程及服务重启持久化、执行前后审计故障；测试只使用临时数据库与模拟 SDK。
+
+## 14. V0.3.0 比赛 Demo API
+
+本阶段只优化后端协议，没有新增前端、真实验证或登录系统。HTTP 层使用 `api/responses.py` 适配已有 Agent 结果；Risk Engine、Permission Controller 的实际判断被直接传递到响应，不解析 `reply` 或让 LLM 补写权限。Agent、DeepSeek 兼容调用、原工具和 SQLite 表结构保持不变。
+
+### 推荐调用顺序
+
+1. `POST /chat/secure` 发送 `{"account_id":"1001","message":"给账户1002转500元"}`。
+2. `pending` 且 `require_confirmation: true` 时，展示 `pending_action.params`，由用户点击确认或取消。
+3. `POST /confirm` 发送 `{"account_id":"1001","action_id":"真实任务编号"}`；或 `POST /cancel` 发送相同字段。不能重新提交金额或收款人。
+4. 用响应的 `audit_id` 查询 `GET /audit/1001?request_id=实际audit_id`，展示决策链。
+
+`audit_id` 是现有 `request_id` 的别名，表示整个操作的审计链，不是 `audit_logs.id` 单条事件序号。编号由 `AuditLogger` 的代码生成。确认和取消继续返回原操作的编号，SQLite 无需迁移。直接通过管理器创建的任务也会保存自己的审计上下文。
+
+### 安全聊天响应
+
+`POST /chat/secure` 保留 `status`、`reply`、`tool_results`、`request_id` 和 `pending_action` 等旧字段，增加统一 `message`、权限及确认标志、`audit_id`、`decisions` 和 `audit_warning`。以下为结构示例，编号及工具结果以实际返回为准。
+
+绿色查询：
+
+```json
+{
+  "status": "completed",
+  "message": "账户 1001（张三）余额：10000.00 元。",
+  "risk_level": "green",
+  "risk_reason": "查询类操作可自动执行",
+  "operation": "get_balance",
+  "permission_action": "allow",
+  "require_confirmation": false,
+  "require_verification": false,
+  "audit_id": "实际审计链编号",
+  "request_id": "实际审计链编号",
+  "tool_results": [{"tool": "get_balance", "result": {"ok": true, "balance": "10000.00"}}]
+}
+```
+
+黄色转账：
+
+```json
+{
+  "status": "pending",
+  "message": "转账 500 元，需要用户确认，尚未执行。",
+  "risk_level": "yellow",
+  "permission_action": "pending_confirmation",
+  "require_confirmation": true,
+  "require_verification": false,
+  "action_id": "服务端保存的实际任务编号",
+  "audit_id": "实际审计链编号",
+  "tool_results": []
+}
+```
+
+为兼容 V0.2 测试，红色操作继续使用 `status: require_verification`，不改名为 `blocked`，不返回 `action_id`；风险为 `red`，权限为 `require_verification`，`require_confirmation: false`、`require_verification: true`。同时返回 `error_code: VERIFICATION_REQUIRED` 和统一的 `error` 对象。此时没有执行工具，也不存在可通过 `/confirm` 放行的任务；前端应展示红色阻断状态，不能模拟验证成功。
+
+`decisions` 保存每次工具尝试的实际操作、风险等级、风险原因、权限及两种确认标志。多工具请求的顶层字段取实际决策中最高风险的一项，不把查询的 `green` 覆盖在随后转账的 `yellow` 上。决策列表通过请求上下文传递到工具线程，并在请求结束后清理，不跨请求混用。
+
+`needs_input` 表示未选择工具，此时 `decisions: []`，不编造绿色权限。为了保持旧字段约定，值为 `null` 的可选决策字段及无任务时的 `action_id` 会省略；前端将缺失字段视为尚无决策/任务。`partial` 表示已经完成部分工具，仍保留其真实结果；`execution_unknown` 表示结果待核对，不等于失败或已回滚。这些既有状态继续保留。
+
+### 确认和取消响应
+
+`POST /confirm` 成功时，`execution_result` 是原工具结果，包含交易编号、实际金额、余额及 `simulated`。保留旧 `result`、`reply`、`action`、`action_id` 和 `request_id` 供旧客户端使用，`message` 由工具结果渲染。
+
+```json
+{
+  "status": "completed",
+  "message": "模拟转账成功，实际完整文本包含账户、金额、余额和交易编号。",
+  "execution_result": {
+    "ok": true,
+    "simulated": true,
+    "transfer_id": "实际交易编号",
+    "amount": "500.00",
+    "balance": "9500.00"
+  },
+  "audit_id": "原操作的审计链编号"
+}
+```
+
+取消响应如下；`POST /confirm` 的 `confirmed: false` 使用相同结构。
+
+```json
+{
+  "status": "cancelled",
+  "message": "操作已取消，未执行。",
+  "execution_result": {},
+  "audit_id": "原操作的审计链编号"
+}
+```
+
+工具业务失败仍返回 HTTP 200 / `status: failed`，`execution_result` 保留原错误，并附加 `error_code`、`error`。结果未知仍为 `execution_unknown`，`execution_result: {}` 表示没有工具凭据，不能据此认定未扣款。确认仍原子领取任务，不调用 LLM、不重试或重复执行。
+
+### 统一错误协议
+
+HTTP 错误返回下列核心字段，并保留原 HTTP 状态码和兼容 `detail`：
+
+```json
+{
+  "status": "error",
+  "error_code": "ACTION_NOT_FOUND",
+  "message": "待确认操作不存在或不属于当前账户。"
+}
+```
+
+| 情况 | HTTP 状态 | error_code |
+| --- | --- | --- |
+| 请求字段、类型、JSON 或取值范围错误 | 422 | INVALID_ARGUMENTS |
+| 直接查询不存在账户 | 404 | ACCOUNT_NOT_FOUND |
+| 未知、已消费或其他账户的 action | 404 | ACTION_NOT_FOUND |
+| LLM 未配置 | 503 | LLM_NOT_CONFIGURED |
+| 模型网络或服务失败 | 502 | LLM_SERVICE_ERROR |
+| 初始模型调用超时 | 504 | LLM_TIMEOUT |
+| 执行前审计不可用 | 503 | AUDIT_UNAVAILABLE |
+| 未处理的服务异常 | 500 | INTERNAL_ERROR |
+
+业务阻断/失败继续保留旧 HTTP 200 和业务 `status`，其中 `error` 使用相同的 `{status:"error", error_code, message}` 核心格式。强验证未完成的代码为 `VERIFICATION_REQUIRED`；工具错误沿用 `ACCOUNT_NOT_FOUND`、`INVALID_ARGUMENTS`、`INSUFFICIENT_FUNDS` 等原代码。前端先判断 HTTP 状态，再根据业务 `status` 和 `error` 展示，不将所有 HTTP 200 当作成功。
+
+参数错误的 `detail` 仅含字段位置、原因和类型，不回显输入值；未处理异常不暴露内部诊断。执行后的审计告警以 `audit_warning` 返回，同时加入 `message`，不能覆盖已成功的工具结果或触发重新转账。旧 `/chat` 的成功响应仍只有 `status`、`reply`、`tool_results`；其原 `detail` 错误信息仍可读取。
+
+### 测试与阶段边界
+
+完整回归命令保持不变：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`。新增测试使用 MockTransport 和临时 SQLite，覆盖三种风险结构、确认/取消、统一错误、模型伪造字段、审计关联及告警、并发隔离、部分结果与旧 `/chat` 兼容。
+
+Windows / Python 3.14.7 下，原有 88 个测试与新增 22 个测试，共 **110 个全部通过**。测试不访问真实 DeepSeek，不改动运行数据库。
+
+本阶段不新增 CORS、前端、任务持久化、过期策略或真实强验证。待确认任务仍要求单 worker，重启会丢失。改动保留在 `feature/security-v0.2`，人工审查前不暂存、不提交 commit。

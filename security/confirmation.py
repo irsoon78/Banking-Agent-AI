@@ -91,21 +91,28 @@ class PendingActionManager:
         context["risk_level"] = risk["risk_level"]
         self._log("risk_evaluated", context, details={"reason": risk["reason"]})
         permission = self._permissions.decide(action, risk["risk_level"])
+        # 把同一次确定性判断交给 API 展示，不由 API 或模型重新推断权限。
+        decision = {
+            "operation": action, "risk_level": risk["risk_level"], "risk_reason": risk["reason"],
+            "permission_action": permission["action"],
+            "require_confirmation": permission["require_confirmation"],
+            "require_verification": permission["require_verification"],
+        }
         context["permission_action"] = permission["action"]
         context["confirmation_status"] = "pending" if risk["risk_level"] == "yellow" else (
             "verification_required" if risk["risk_level"] == "red" else "not_required"
         )
         self._log("permission_decided", context, details=permission)
         if permission["action"] == "allow":
-            return self._execute(account_id, action, deepcopy(params), context)
+            return {**self._execute(account_id, action, deepcopy(params), context), **decision}
         if permission["action"] == "require_verification":
             return {
-                "status": "require_verification", "risk_level": "red",
+                **decision, "status": "require_verification",
                 "message": "该操作需要强验证，尚未执行。",
             }
         pending = self.create_pending_action(account_id, action, params, risk["risk_level"], context)
         return {
-            "status": "pending", "risk_level": "yellow",
+            **decision, "status": "pending",
             "message": f"转账 {pending['params']['amount']} 元，需要用户确认，尚未执行。",
             "action_id": pending["action_id"], "pending_action": pending,
         }

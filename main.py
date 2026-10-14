@@ -4,12 +4,17 @@ import json
 import os
 from contextlib import asynccontextmanager
 from functools import partial
+from typing import Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, Query, Request
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from api.responses import (
+    APIError, ActionResponse, ErrorResponse, SecurityDecision, action_response_fields,
+    decision_scope, install_error_handlers, record_decision, secure_response,
+)
 from agent.llm_agent import ARGUMENT_MODELS, AgentError, AgentPause, BankingAgent, execute_tool, render_result
 from database.db import PROJECT_DIR, init_db
 from deepseek_client import DeepSeekHTTPClient
@@ -40,6 +45,12 @@ def audited_execute_tool(name: str, raw_arguments: str, account_id: str, audit_l
     context["risk_level"] = risk["risk_level"]
     audit_logger.log_event("risk_evaluated", context, details={"reason": risk["reason"]})
     permission = PermissionController().decide(name, risk["risk_level"])
+    record_decision({
+        "operation": name, "risk_level": risk["risk_level"], "risk_reason": risk["reason"],
+        "permission_action": permission["action"],
+        "require_confirmation": permission["require_confirmation"],
+        "require_verification": permission["require_verification"],
+    })
     context["permission_action"] = permission["action"]
     context["confirmation_status"] = "legacy_bypass" if valid and permission["action"] != "allow" else "not_required"
     audit_logger.log_event("permission_decided", context, details={**permission, "mode": "legacy"})
@@ -67,6 +78,7 @@ def secure_execute_tool(name: str, raw_arguments: str, account_id: str, manager:
     except (ValueError, TypeError, ValidationError):
         return audited_execute_tool(name, raw_arguments, account_id, audit_logger) if audit_logger else execute_tool(name, raw_arguments, account_id)
     response = manager.prepare_action(account_id, name, args)
+    record_decision(response)
     if response["status"] in {"pending", "require_verification", "execution_unknown"}:
         raise AgentPause(response)
     result = response["result"]
@@ -104,7 +116,11 @@ async def lifespan(app: FastAPI):
             await client.close()
 
 
-app = FastAPI(title="Banking Agent AI", version="1.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="Banking Agent AI", version="0.3.0", lifespan=lifespan,
+    responses={code: {"model": ErrorResponse} for code in (403, 404, 422, 500, 502, 503, 504)},
+)
+install_error_handlers(app)
 
 
 class ChatRequest(BaseModel):
@@ -128,10 +144,21 @@ class ChatResponse(BaseModel):
 
 
 class SecureChatResponse(ChatResponse):
-    request_id: str | None = None
-    message: str | None = None
+    status: Literal["completed", "pending", "require_verification", "failed", "needs_input", "partial", "execution_unknown"]
+    request_id: str
+    message: str
     action_id: str | None = None
-    risk_level: str | None = None
+    risk_level: Literal["green", "yellow", "red"] | None = None
+    operation: str | None = None
+    risk_reason: str | None = None
+    permission_action: Literal["allow", "pending_confirmation", "require_verification"] | None = None
+    require_confirmation: bool | None = None
+    require_verification: bool | None = None
+    decisions: list[SecurityDecision] = Field(default_factory=list)
+    audit_id: str
+    audit_warning: str | None = None
+    error_code: str | None = None
+    error: ErrorResponse | None = None
     pending_action: dict | None = None
 
 
@@ -183,41 +210,42 @@ def finish_audit(logger: AuditLogger, context: dict, response: dict) -> None:
 async def run_audited_chat(body: ChatRequest, request: Request, secure: bool):
     logger = request.app.state.audit_logger
     try:
-        with logger.request_context(body.account_id, body.message) as context:
+        with decision_scope() as decisions, logger.request_context(body.account_id, body.message) as context:
             logger.log_event("request_received", context, details={"entrypoint": "/chat/secure" if secure else "/chat"})
             agent = request.app.state.secure_agent if secure else request.app.state.agent
             if agent is None:
                 logger.log_after_execution("request_failed", context, details={"code": "LLM_NOT_CONFIGURED"})
-                raise HTTPException(503, "请在 .env 中配置 DEEPSEEK_API_KEY，然后重启服务。")
+                raise APIError(503, "LLM_NOT_CONFIGURED", "请在 .env 中配置 DEEPSEEK_API_KEY，然后重启服务。")
             try:
                 response = await agent.run(body.message, body.account_id)
             except AgentError as exc:
                 logger.log_after_execution("request_failed", context, details={"http_status": exc.status_code})
-                raise HTTPException(exc.status_code, str(exc)) from None
+                code = "LLM_TIMEOUT" if exc.status_code == 504 else "LLM_SERVICE_ERROR"
+                raise APIError(exc.status_code, code, str(exc)) from None
             except Exception:
                 logger.log_after_execution("request_failed", context, execution_result="unknown")
                 raise
             finish_audit(logger, context, response)
-            return response
+            return secure_response(response, decisions) if secure else response
     except AuditError as exc:
-        raise HTTPException(503, str(exc)) from None
+        raise APIError(503, "AUDIT_UNAVAILABLE", str(exc)) from None
 
 
 def action_response(response: dict) -> dict:
     if response["status"] == "not_found":
-        raise HTTPException(404, detail=response)
+        raise APIError(404, "ACTION_NOT_FOUND", response["message"], detail=response)
     if "result" in response:
         name = "transfer_money" if response["action"] == "transfer" else response["action"]
         response["reply"] = render_result(name, response["result"])
-    return response
+    return action_response_fields(response)
 
 
-@app.post("/confirm")
+@app.post("/confirm", response_model=ActionResponse, response_model_exclude_none=True)
 def confirm_action(body: ConfirmRequest, request: Request):
     return run_audited_confirmation(body, request, confirmed=body.confirmed)
 
 
-@app.post("/cancel")
+@app.post("/cancel", response_model=ActionResponse, response_model_exclude_none=True)
 def cancel_action(body: ActionRequest, request: Request):
     return run_audited_confirmation(body, request, confirmed=False)
 
@@ -231,14 +259,14 @@ def run_audited_confirmation(body: ActionRequest, request: Request, confirmed: b
             finish_audit(logger, context, response)
             return action_response(response)
     except AuditError as exc:
-        raise HTTPException(503, str(exc)) from None
+        raise APIError(503, "AUDIT_UNAVAILABLE", str(exc)) from None
 
 
 def checked_result(result: dict) -> dict:
     if result["ok"]:
         return result
     status = 404 if result["code"] == "ACCOUNT_NOT_FOUND" else 503
-    raise HTTPException(status, detail=result)
+    raise APIError(status, result["code"], result["error"], detail=result)
 
 
 @app.get("/accounts/{account_id}/balance")
@@ -261,7 +289,7 @@ def audited_query(name: str, account_id: str, params: dict, request: Request):
                 result["audit_warning"] = AUDIT_WARNING
             return checked_result(result)
     except AuditError as exc:
-        raise HTTPException(503, str(exc)) from None
+        raise APIError(503, "AUDIT_UNAVAILABLE", str(exc)) from None
 
 
 @app.get("/audit/{account_id}")
@@ -271,6 +299,6 @@ def audit_history(account_id: str, request: Request, limit: int = Query(default=
         logs = request.app.state.audit_logger.query(account_id, limit, offset, request_id)
         return {"account_id": account_id, "logs": logs, "limit": limit, "offset": offset}
     except AuditError as exc:
-        raise HTTPException(503, str(exc)) from None
+        raise APIError(503, "AUDIT_UNAVAILABLE", str(exc)) from None
     except ValueError:
-        raise HTTPException(422, "审计查询参数无效。") from None
+        raise APIError(422, "INVALID_ARGUMENTS", "审计查询参数无效。") from None
