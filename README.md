@@ -23,9 +23,13 @@ Banking-Agent-AI/
 │   ├── __init__.py             # Python 包标记
 │   ├── db.py                   # 连接管理、建表、演示数据、金额格式化
 │   └── banking.db              # 首次启动自动生成，不包含在源码压缩包中
+├── security/
+│   ├── __init__.py             # 导出 RiskEngine
+│   └── risk_engine.py          # 独立于 LLM 的确定性风险分类
 ├── tests/
 │   ├── __init__.py             # Python 包标记
-│   └── test_banking.py         # 临时数据库、事务与模拟 LLM/SDK 测试
+│   ├── test_banking.py         # 临时数据库、事务与模拟 LLM/SDK 测试
+│   └── test_risk_engine.py     # 风险等级、阈值、无效输入与扩展操作测试
 ├── .env.example               # 环境变量示例
 ├── .gitignore                 # 忽略密钥、虚拟环境、缓存和数据库
 ├── AGENTS.md                  # 稳定基线、V0.2 分支与提交规则
@@ -224,7 +228,7 @@ macOS / Linux：
 测试使用 `httpx.MockTransport` 模拟 LLM API，不访问网络或消耗额度；真实自然语言理解需配置 Key 后通过 `/chat` 验证。
 
 测试还验证 DeepSeek 环境变量与默认配置、官方地址和认证头、strict schema 兼容处理，以及 HTTP `/chat` → OpenAI SDK → DeepSeek 模拟响应 → 工具 → SQLite 的查询和转账流程。
-本次在 Windows / Python 3.12.14 上运行 **19 个测试，全部通过**。未使用真实 DeepSeek API Key 验证远程服务或模型理解。
+DeepSeek 适配阶段在 Windows / Python 3.12.14 上运行 **19 个测试，全部通过**。未使用真实 DeepSeek API Key 验证远程服务或模型理解。
 另已实际启动 Uvicorn，验证健康检查、余额、账单、OpenAPI 文档和缺少 Key 时的 HTTP 响应，并在验证后停止服务。
 
 ## 8. 数据库初始化与重新演示
@@ -256,4 +260,39 @@ git diff --cached
 
 `.env`、`.venv`、数据库和缓存已配置为忽略；`.env.example` 仅允许空值或占位符。忽略规则不能防止源码中出现 API Key，因此每次提交仍须检查暂存内容。
 
-如果修改导致已有 V0.1 功能失败，立即停止后续开发并报告问题。完整规则见 [AGENTS.md](AGENTS.md)。本次仅建立 Git 基线和开发流程，未添加 V0.2 业务功能。
+如果修改导致已有 V0.1 功能失败，立即停止后续开发并报告问题。完整规则见 [AGENTS.md](AGENTS.md)。Git 基线建立阶段仅设置版本与开发流程，未添加 V0.2 业务功能。
+
+## 10. V0.2.1 Risk Engine 基础模块
+
+Risk Engine 只负责根据操作和人民币金额返回 `risk_level`、`reason`，不依赖 LLM、FastAPI 或 SQLite，不执行资金操作。
+
+```python
+from security import RiskEngine
+
+engine = RiskEngine()
+result = engine.evaluate(operation="transfer", amount=500)
+# {"risk_level": "yellow", "reason": "小额转账需要用户确认"}
+```
+
+| 操作 | 风险等级 | 后续执行策略 |
+| --- | --- | --- |
+| `get_balance`、`get_bills`、`query` 等明确支持的查询 | `green` | 自动执行 |
+| `transfer` / `transfer_money`，金额为正数且 ≤ 1000 元 | `yellow` | 用户确认 |
+| 转账金额 > 1000 元 | `red` | 强验证 |
+| `high_risk`，以及预留的理财、卡片管理、订阅管理操作 | `red` | 强验证 |
+| 未知操作、转账金额缺失或无效 | `red` | 保守分类，不能因此跳过业务校验 |
+
+支持整数、浮点数、十进制字符串和 `Decimal` 金额。使用 `Decimal` 比较阈值，不进行舍入；拒绝布尔值、非数值、非有限数和非正数。风险分类不替代转账工具现有的金额精度、账户和余额校验。
+未来新增操作时，可扩展操作集合和专用评估方法；未知操作默认不会按低风险执行。
+
+未来接入时的流程为：用户请求 → Agent 识别工具和参数 → Risk Engine 根据实际待执行操作判断风险 → 执行策略处理自动执行、确认或强验证 → 工具执行。风险等级由 Python 规则确定，不能由模型自行选择。
+
+**本阶段尚未将 Risk Engine 接入 Agent 或工具执行入口，也未实现用户确认和强验证。现有 `/chat` 的模拟转账行为保持不变。** 本模块处于 `feature/security-v0.2` 的待审查修改中，人工审查前不提交 commit。
+
+仅运行风险模块测试：
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest tests.test_risk_engine -v
+```
+
+V0.2.1 基础模块已在 Windows / Python 3.14.7 下验证：新增 13 个风险测试与已有 19 个银行功能测试，共 **32 个测试全部通过**。既有业务代码未修改，修改未暂存、未提交，等待人工审查。
