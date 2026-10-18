@@ -1,0 +1,39 @@
+import { request } from "./client";
+import type {
+  Account,
+  ActionResponse,
+  AuditResponse,
+  BillsResponse,
+  Health,
+  SecureResponse,
+} from "./types";
+
+export const banking = {
+  health: () => request<Health>("/health"),
+  balance: (account: string) =>
+    request<Account>(`/accounts/${encodeURIComponent(account)}/balance`),
+  bills: (account: string) =>
+    request<BillsResponse>(
+      `/accounts/${encodeURIComponent(account)}/bills?limit=10`,
+    ),
+  chat: (account_id: string, message: string) =>
+    request<SecureResponse>("/chat/secure", { account_id, message }),
+  confirm: (account_id: string, action_id: string) =>
+    request<ActionResponse>("/confirm", {
+      account_id,
+      action_id,
+      confirmed: true,
+    }),
+  cancel: (account_id: string, action_id: string) =>
+    request<ActionResponse>("/cancel", { account_id, action_id }),
+  audit: (account: string, auditId?: string, offset = 0) => {
+    const params = new URLSearchParams({
+      limit: "100",
+      offset: String(offset),
+    });
+    if (auditId) params.set("request_id", auditId);
+    return request<AuditResponse>(
+      `/audit/${encodeURIComponent(account)}?${params}`,
+    );
+  },
+};
