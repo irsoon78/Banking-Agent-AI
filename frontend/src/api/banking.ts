@@ -16,8 +16,16 @@ export const banking = {
     request<BillsResponse>(
       `/accounts/${encodeURIComponent(account)}/bills?limit=10`,
     ),
-  chat: (account_id: string, message: string) =>
-    request<SecureResponse>("/chat/secure", { account_id, message }),
+  chat: (
+    account_id: string,
+    message: string,
+    conversation_id?: string | null,
+  ) =>
+    request<SecureResponse>("/chat/secure", {
+      account_id,
+      message,
+      ...(conversation_id ? { conversation_id } : {}),
+    }),
   confirm: (account_id: string, action_id: string) =>
     request<ActionResponse>("/confirm", {
       account_id,

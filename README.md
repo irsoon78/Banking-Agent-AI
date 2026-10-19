@@ -2,9 +2,9 @@
 
 一个基于 **Python + FastAPI + SQLite + LLM Tool Calling** 的银行智能体 Demo。
 LLM 使用 **DeepSeek 官方兼容接口**，Python 调用仍使用 **OpenAI SDK**。
-支持自然语言查询余额、查询最近账单和模拟转账。没有自定义前端、登录权限系统、MCP 或真实银行接入。
+支持自然对话、查询余额、查询最近账单和受控模拟转账；已有 React 演示前端。没有登录认证、MCP 或真实银行接入。
 
-**比赛 Demo 推荐使用 `/chat/secure`、`/confirm`、`/cancel`、`/audit/{account_id}`。旧 `/chat` 仅用于兼容测试，仍保留直接执行行为，不能作为比赛页面的安全入口。** V0.3.0 响应契约见第 14 节。
+**统一对话入口为 `/chat/secure`，确认/取消仍通过 `/confirm`、`/cancel`。旧 `/chat` 仅保留只读和非业务对话兼容，任何转账都会被后端拒绝。** V0.3.0 原协议见第 14 节，本轮增量与限制见第 15 节；第 9–14 节保留阶段历史，旧直接执行行为已被本轮安全加固替代。
 
 ## 1. 项目结构与文件职责
 
@@ -18,6 +18,8 @@ Banking-Agent-AI/
 ├── agent/
 │   ├── __init__.py             # Python 包标记
 │   ├── llm_agent.py            # 工具描述、参数校验、调用循环、工具结果回复
+│   ├── dialogue.py             # 非业务回复分类、保守文本与写意图边界
+│   ├── sessions.py             # 按账户隔离、有界、可过期的内存会话
 │   └── prompt.py               # 系统提示词：功能范围与工具使用规则
 ├── tools/
 │   ├── __init__.py             # Python 包标记
@@ -124,7 +126,7 @@ macOS / Linux 启动：
 
 ## 4. 自然语言调用
 
-`POST /chat` 请求：
+`POST /chat/secure` 请求：
 
 ```json
 {"account_id": "1001", "message": "查询我的余额"}
@@ -147,7 +149,7 @@ PowerShell 示例（确保服务已经启动）：
 
 ```powershell
 $body = @{ account_id = '1001'; message = '查询我的余额' } | ConvertTo-Json
-Invoke-RestMethod -Uri 'http://127.0.0.1:8000/chat' -Method Post -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
+Invoke-RestMethod -Uri 'http://127.0.0.1:8000/chat/secure' -Method Post -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
 ```
 
 余额查询成功时返回以下结构；金额以当前数据库为准，此处展示首次启动的数据：
@@ -176,7 +178,7 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:8000/chat' -Method Post -ContentType 'a
 工具返回 `simulated: true`、交易编号、金额、账户编号及转出账户余额。
 若从初始数据执行上面的 `100.50` 元转账，余额将变为 `9899.50` 元和 `5100.50` 元。
 
-每次 `/chat` 独立处理，不保存多轮聊天上下文。缺少收款账户编号或金额时，请重新发送完整指令。
+旧 `/chat` 是无会话的只读兼容入口。`/chat/secure` 返回 `conversation_id`，后续请求传回此编号即可有限连续交流；缺少转账信息时可以补充用户自己的账户编号和金额。
 每条请求支持一笔转账；转账完成后立即返回，不继续执行该请求中的后续查询。需要查看最新账单时另发请求。
 同一转账指令通过新的 HTTP 请求再次发送，会产生另一笔模拟转账。本 Demo 未实现跨请求幂等。
 
@@ -185,7 +187,7 @@ Invoke-RestMethod -Uri 'http://127.0.0.1:8000/chat' -Method Post -ContentType 'a
 | 接口 | 用途 | 需要 LLM Key |
 | --- | --- | --- |
 | `GET /health` | 服务状态和 LLM 是否已配置 | 否 |
-| `POST /chat` | 自然语言工具调用入口 | 是 |
+| `POST /chat` | 无会话只读/对话兼容入口，拒绝所有转账 | 是 |
 | `POST /chat/secure` | 自然语言风险、权限及黄色确认入口 | 是 |
 | `POST /confirm` | 确认指定账户的待执行任务 | 否 |
 | `POST /cancel` | 取消指定账户的待执行任务 | 否 |
@@ -244,6 +246,7 @@ macOS / Linux：
 测试使用 `httpx.MockTransport` 模拟 LLM API，不访问网络或消耗额度；真实自然语言理解需配置 Key 后通过 `/chat` 验证。
 
 测试还验证 DeepSeek 环境变量与默认配置、官方地址和认证头、strict schema 兼容处理，以及 HTTP `/chat` → OpenAI SDK → DeepSeek 模拟响应 → 工具 → SQLite 的查询和转账流程。
+以上为 DeepSeek 适配阶段的历史记录。本轮旧 `/chat` 转账测试已改为拒绝写操作；安全转账由 `/chat/secure` 创建任务并经 `/confirm` 执行，所有测试只用隔离数据。
 DeepSeek 适配阶段在 Windows / Python 3.12.14 上运行 **19 个测试，全部通过**。未使用真实 DeepSeek API Key 验证远程服务或模型理解。
 另已实际启动 Uvicorn，验证健康检查、余额、账单、OpenAPI 文档和缺少 Key 时的 HTTP 响应，并在验证后停止服务。
 
@@ -478,7 +481,7 @@ GET /audit/1001?limit=100&offset=0
 
 ### 执行与故障边界
 
-`/chat/secure` 执行实际权限流程。兼容入口 `/chat` 保留原来的直接执行行为，审计仍记录真实风险和建议权限；跳过黄色确认或红色验证时明确记为 `confirmation_status: legacy_bypass`，不伪装成已经确认或验证。
+`/chat/secure` 执行实际权限流程。本节记录的 V0.2.4 曾保留旧入口直接执行行为；本轮已移除该能力：兼容入口 `/chat` 的写操作记录为 `legacy_write_blocked`，不执行，也不生成待确认任务。历史 `legacy_bypass` 日志不会被修改或清理。
 
 关键执行前审计不可用时返回 HTTP 503，不执行工具；确认任务未被领取，恢复后仍可确认。工具已执行后若末尾审计失败，返回真实工具结果并提示 `audit_warning`，不将成功转账改为失败，也不自动重试。兼容聊天响应会在 `reply` 中显示提示。
 
@@ -612,4 +615,50 @@ HTTP 错误返回下列核心字段，并保留原 HTTP 状态码和兼容 `deta
 
 Windows / Python 3.14.7 下，原有 88 个测试与新增 22 个测试，共 **110 个全部通过**。测试不访问真实 DeepSeek，不改动运行数据库。
 
-本阶段不新增 CORS、前端、任务持久化、过期策略或真实强验证。待确认任务仍要求单 worker，重启会丢失。改动保留在 `feature/security-v0.2`，人工审查前不暂存、不提交 commit。
+V0.3.0 当时不含 CORS、前端、任务持久化、过期策略或真实强验证；其稳定提交现为 `7bdae47`。前端基线为 `18279af`；本轮在独立开发分支实施，未暂存、提交、合并或推送。待确认任务仍要求单 worker，重启会丢失。
+
+## 15. 第一阶段：安全加固与自然对话
+
+本轮不新增理财、卡片、订阅、代扣或工作流，不迁移数据库。FastAPI 原版本号 `0.3.0` 保留，以下为该基线上的未提交增量协议。
+
+### 执行边界
+
+- `/chat` 仅兼容余额、账单查询和非业务回复。模型请求黄色或红色转账时返回 HTTP 200 / `status: failed`，工具错误代码为 `LEGACY_WRITE_DISABLED`；余额不变，没有待确认任务，审计记录阻断。兼容成功/失败响应仍仅含 `status`、`reply`、`tool_results`。
+- `/chat/secure` 的转账仍经 Risk Engine → Permission → PendingActionManager → 原工具与审计。模型的风险、授权、确认字段无效；“我确认了”不能代替确认接口。Agent 默认执行器也只允许只读，未注册安全执行器不能直接转账。
+- 问候和帮助不向模型开放银行工具。其他工具请求仍按白名单/参数校验处理；非转账请求中幻觉产生的转账工具不会创建任务。
+- 普通回复允许受约束的模型文本。金融事实和交易结果继续由工具模板生成；涉及金融状态、完成声明或伪造字段的无工具文本会保守回退。此文本策略不是任意自然语言的形式化防幻觉保证，可能对部分正常金融解释回退，不能作为生产级语义校验器。
+
+### 响应分类
+
+`/chat/secure` 新增 `response_kind` 与 `conversation_id`。`response_kind` 为：
+
+| 类型 | 含义 |
+| --- | --- |
+| `conversation` | 普通对话，不能当成业务成功 |
+| `capabilities` | 后端可信的现有能力与使用说明 |
+| `clarification` | 信息不足、不能用文本确认或已有待确认任务 |
+| `unsupported` | 当前未实现的业务，不生成凭据 |
+| `business_result` | 工具结果、风险暂停或业务失败，仍需判断 status、ok 等字段 |
+
+普通对话可返回 `status: completed`，只表示回复完成，没有绿色风险决策和交易凭据。前端使用蓝色“对话回复/能力说明/暂不支持”区分，不把 HTTP 200 或 completed 一律渲染为金融成功。原 `needs_input` 用于澄清，而非所有无工具回复。
+
+### 有界会话
+
+第一次请求可省略 `conversation_id`；后续只回传服务端生成的编号：
+
+```json
+{"account_id":"1001","conversation_id":"上次返回的32位十六进制编号","message":"继续介绍一下"}
+```
+
+- 会话在当前服务进程内存保存，最多 128 个、空闲 20 分钟过期；只保留最近 6 次交流（12 条历史消息，每条请求仍最多 2000 字符）。单会话同一时刻只处理一条消息。
+- 编号与账户绑定；其他账户、未知或过期编号返回 404 / `SESSION_NOT_FOUND`。并发返回 409 / `SESSION_BUSY`，容量达到上限返回 429 / `SESSION_LIMIT`。不自动重发。
+- 客户端不能上传历史、system 消息、金融结果或授权字段。历史只保存用户文本及受控回复/业务状态摘要，不保存工具消息、余额、账单和交易凭据。用户历史也只是未经信任的交流背景，不是账本。查询始终需要新工具结果。
+- 同一会话已有待确认任务时，仍可聊天和查询，但新转账不会创建第二笔任务或替换原参数。“确认/取消”始终绑定原 action_id 和原 audit_id。
+- 会话过期不自动取消或执行原任务；前端处理原任务后可点“新对话”。重启会丢失会话和待确认任务，持久化审计保留；不提供自动恢复/执行。
+- 浏览器刷新暂不恢复状态；仍没有真实登录认证，账户隔离不等于可信身份认证。请保持单 worker、本地演示使用。
+
+### 前端与回归
+
+前端分别保存当前会话、最近业务决策、原待确认决策/参数与执行结果。新聊天不覆盖待确认任务；原任务风险卡保留原审计入口。交易后强制启动新的余额/账单读取，较早的读取不能覆盖较新结果。确定性的 LLM 服务错误正常展示，不伪造成功或自动重试。
+
+后端回归使用临时数据库及 MockTransport，前端运行 `npm test`、`npm run build`。不要使用当前演示数据库测试转账；不要将模拟模型测试描述为真实 DeepSeek 联网验证。

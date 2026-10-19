@@ -309,6 +309,32 @@ export function ResponseContent({
 }: {
   response: SecureResponse | ActionResponse;
 }) {
+  if (
+    "response_kind" in response &&
+    response.response_kind !== "business_result"
+  ) {
+    const labels = {
+      conversation: "对话回复",
+      capabilities: "能力说明",
+      clarification: "需要补充信息",
+      unsupported: "暂不支持",
+    };
+    return (
+      <>
+        <span className="badge tone-blue">
+          {labels[response.response_kind]}
+        </span>
+        <p className="response-text">{response.message}</p>
+        {response.tool_results.map((item, index) => (
+          <ToolResult key={index} {...item} />
+        ))}
+        {response.audit_warning && <Alert>{response.audit_warning}</Alert>}
+        <div className="message-links">
+          <AuditLink id={response.audit_id} />
+        </div>
+      </>
+    );
+  }
   return (
     <>
       <span

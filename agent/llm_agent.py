@@ -8,6 +8,7 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpe
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.prompt import SYSTEM_PROMPT
+from agent.dialogue import social_or_help, confirmation_message, transfer_intent, text_response, unsupported_request
 from tools.account import get_balance
 from tools.bill import get_bills
 from tools.transfer import transfer_money
@@ -81,6 +82,12 @@ def execute_tool(name: str, raw_arguments: str, account_id: str) -> dict:
     return transfer_money(account_id, **args)
 
 
+def execute_read_only_tool(name: str, raw_arguments: str, account_id: str) -> dict:
+    if name == "transfer_money":
+        return {"ok": False, "code": "SECURE_ENTRYPOINT_REQUIRED", "error": "转账必须通过安全入口及用户确认，不能直接执行。"}
+    return execute_tool(name, raw_arguments, account_id)
+
+
 def render_result(name: str, result: dict) -> str:
     """所有金额、账户和交易结果都来自工具返回值，不采用模型自由文本。"""
     if not result["ok"]:
@@ -107,29 +114,31 @@ def make_response(records: list[dict], status: str, notice: str = "") -> dict:
     reply = "\n".join(render_result(item["tool"], item["result"]) for item in records)
     if notice:
         reply = f"{reply}\n{notice}".strip()
-    return {"status": status, "reply": reply or NO_TOOL_REPLY, "tool_results": records}
+    return {"status": status, "reply": reply or NO_TOOL_REPLY, "tool_results": records, "response_kind": "business_result"}
 
 
 class BankingAgent:
-    def __init__(self, client: AsyncOpenAI, model: str, tool_executor: Callable = execute_tool):
+    def __init__(self, client: AsyncOpenAI, model: str, tool_executor: Callable = execute_read_only_tool):
         self.client = client
         self.model = model
         self.tool_executor = tool_executor
 
-    async def run(self, message: str, account_id: str) -> dict:
+    async def run(self, message: str, account_id: str, *, history: list[dict] | None = None, allow_transfer: bool = True) -> dict:
+        history = history or []
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
+            *history,
             {"role": "user", "content": message},
         ]
+        conversation_only = social_or_help(message) or confirmation_message(message) or unsupported_request(message)
         records = []
         for _ in range(6):
             try:
+                tool_options = {} if conversation_only else {"tools": TOOLS, "tool_choice": "auto", "parallel_tool_calls": False}
                 completion = await self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
-                    tools=TOOLS,
-                    tool_choice="auto",
-                    parallel_tool_calls=False,
+                    **tool_options,
                 )
             except APITimeoutError:
                 if records:
@@ -146,11 +155,20 @@ class BankingAgent:
             assistant = completion.choices[0].message
             calls = assistant.tool_calls or []
             if not calls:
-                return make_response(records, "completed" if records else "needs_input")
+                return make_response(records, "completed") if records else text_response(message, assistant.content)
             # 虽然请求禁用并行调用，仍校验响应，避免一次执行多笔转账。
             if len(calls) != 1 or calls[0].type != "function":
                 return make_response(records, "partial" if records else "failed", "模型返回不支持的工具调用组合，本轮工具未执行。")
             call = calls[0]
+            if call.function.name not in ARGUMENT_MODELS:
+                return make_response([*records, {"tool": call.function.name, "result": {"ok": False, "code": "UNKNOWN_TOOL", "error": "模型请求了不支持的工具。"}}], "failed")
+            if conversation_only:
+                return text_response(message, None)
+            if call.function.name == "transfer_money":
+                if not allow_transfer:
+                    return {"status": "needs_input", "reply": "当前已有待确认任务。可以继续聊天和查询，请先用原任务的确认或取消按钮处理，再发起新转账。", "tool_results": records, "response_kind": "clarification"}
+                if not transfer_intent(message, history):
+                    return text_response(message, None)
             messages.append(assistant.model_dump(exclude_none=True))
             try:
                 result = await asyncio.to_thread(self.tool_executor, call.function.name, call.function.arguments, account_id)

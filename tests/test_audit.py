@@ -183,15 +183,18 @@ class AuditAPITests(DatabaseFixture, unittest.TestCase):
             self.assertEqual(decision["confirmation_status"], "verification_required")
             self.assertNotIn("tool_executed", [row["event_type"] for row in rows])
 
-    def test_legacy_execution_is_honestly_logged_as_bypass(self):
+    def test_legacy_write_is_logged_as_blocked_without_execution(self):
         with self.sdk_client([self.transfer_response("5000")]) as (client, _):
             response = client.post("/chat", json={"message": "给1002转5000元"}).json()
-            self.assertEqual(response["status"], "completed")
-            row = next(item for item in AuditLogger().query("1001") if item["event_type"] == "tool_executed")
+            self.assertEqual(response["status"], "failed")
+            rows = AuditLogger().query("1001")
+            row = next(item for item in rows if item["event_type"] == "legacy_write_blocked")
             self.assertEqual(row["risk_level"], "red")
             self.assertEqual(row["permission_action"], "require_verification")
-            self.assertEqual(row["confirmation_status"], "legacy_bypass")
-            self.assertEqual(row["execution_result"], "success")
+            self.assertEqual(row["confirmation_status"], "blocked")
+            self.assertEqual(row["execution_result"], "not_executed")
+            self.assertNotIn("tool_executed", [item["event_type"] for item in rows])
+            self.assertEqual(get_balance("1001")["balance"], "10000.00")
 
     def test_green_queries_and_audit_query_validation(self):
         with TestClient(app) as client:

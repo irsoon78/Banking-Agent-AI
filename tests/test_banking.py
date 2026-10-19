@@ -12,7 +12,7 @@ import httpx
 from fastapi.testclient import TestClient
 from openai import AsyncOpenAI
 
-from agent.llm_agent import AgentError, BankingAgent, NO_TOOL_REPLY, TOOLS, execute_tool
+from agent.llm_agent import AgentError, BankingAgent, TOOLS, execute_tool
 from database.db import connection, init_db
 from deepseek_client import DeepSeekHTTPClient
 from main import app
@@ -118,7 +118,7 @@ class BankingTests(DatabaseFixture, unittest.TestCase):
             self.assertIn("DEEPSEEK_API_KEY", missing_key.json()["detail"])
             self.assertEqual(client.get("/openapi.json").status_code, 200)
 
-    def test_chat_http_to_sdk_to_transfer(self):
+    def test_legacy_chat_sdk_write_is_rejected(self):
         def handler(request):
             body = json.loads(request.content)
             self.assertIn("模拟转账", body["messages"][-1]["content"])
@@ -143,9 +143,9 @@ class BankingTests(DatabaseFixture, unittest.TestCase):
                 response = client.post("/chat", json={"message": "模拟转账给1002，金额1.25元"})
                 self.assertEqual(response.status_code, 200)
                 data = response.json()
-                self.assertEqual(data["status"], "completed")
-                self.assertEqual(data["tool_results"][0]["result"]["amount"], "1.25")
-                self.assertEqual(get_balance("1001")["balance"], "9998.75")
+                self.assertEqual(data["status"], "failed")
+                self.assertEqual(data["tool_results"][0]["result"]["code"], "LEGACY_WRITE_DISABLED")
+                self.assertEqual(get_balance("1001")["balance"], "10000.00")
         # 兼容层没有修改 Agent 原有 schema 或校验规则。
         original = TOOLS[2]["function"]["parameters"]["properties"]["amount"]
         self.assertEqual(original["maxLength"], 13)
@@ -238,28 +238,30 @@ class AgentTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         result, _ = await self.run_agent([completion("get_bills", {"limit": 3}), completion()])
         self.assertEqual(result["tool_results"][0]["result"]["bills"][0]["amount"], "10000.00")
 
-    async def test_transfer_returns_after_one_call(self):
+    async def test_standalone_agent_default_executor_cannot_transfer(self):
         result, requests = await self.run_agent([
             completion("transfer_money", {"to_account_id": "1002", "amount": "100.50"}),
         ], "给账户1002模拟转账100.50元")
         self.assertEqual(len(requests), 1)
-        self.assertEqual(result["status"], "completed")
-        self.assertIn("9899.50", result["reply"])
-        self.assertEqual(len(get_bills("1001")["bills"]), 2)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["tool_results"][0]["result"]["code"], "SECURE_ENTRYPOINT_REQUIRED")
+        self.assertEqual(get_balance("1001")["balance"], "10000.00")
+        self.assertEqual(len(get_bills("1001")["bills"]), 1)
 
     async def test_no_tool_never_returns_fabricated_data(self):
         result, _ = await self.run_agent([completion(content="转账成功，余额999999元。")])
         self.assertEqual(result["status"], "needs_input")
-        self.assertEqual(result["reply"], NO_TOOL_REPLY)
+        self.assertEqual(result["response_kind"], "clarification")
+        self.assertNotIn("999999", result["reply"])
         self.assertEqual(get_balance("1001")["balance"], "10000.00")
 
     async def test_business_error_stops_agent(self):
         result, requests = await self.run_agent([
             completion("transfer_money", {"to_account_id": "1002", "amount": "20000"}),
-        ])
+        ], "给账户1002转20000元")
         self.assertEqual(result["status"], "failed")
         self.assertEqual(len(requests), 1)
-        self.assertIn("余额不足", result["reply"])
+        self.assertEqual(result["tool_results"][0]["result"]["code"], "SECURE_ENTRYPOINT_REQUIRED")
 
     async def test_multiple_calls_do_not_execute_transfer(self):
         calls = completion("transfer_money", {"to_account_id": "1002", "amount": "1"})["choices"][0]["message"]["tool_calls"]

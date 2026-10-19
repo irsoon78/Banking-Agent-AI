@@ -25,6 +25,8 @@ export interface DemoState {
   health: Health | null;
   messages: Message[];
   currentDecision: SecureResponse | null;
+  pendingDecision: SecureResponse | null;
+  conversation_id: string | null;
   pendingAction: PendingAction | null;
   audit_id: string | null;
   auditLogs: AuditLog[];
@@ -48,6 +50,8 @@ export const initialState: DemoState = {
   health: null,
   messages: [],
   currentDecision: null,
+  pendingDecision: null,
+  conversation_id: null,
   pendingAction: null,
   audit_id: null,
   auditLogs: [],
@@ -75,6 +79,7 @@ export type DemoAction =
     }
   | { type: "message"; message: Message }
   | { type: "chat"; response: SecureResponse }
+  | { type: "newConversation" }
   | { type: "action"; response: ActionResponse }
   | {
       type: "error";
@@ -106,13 +111,21 @@ export function demoReducer(state: DemoState, action: DemoAction): DemoState {
     case "message":
       return { ...state, messages: [...state.messages, action.message] };
     case "chat":
+      const hasDecision = action.response.decisions.length > 0;
       return {
         ...state,
-        currentDecision: action.response,
-        pendingAction: action.response.pending_action ?? state.pendingAction,
+        conversation_id: action.response.conversation_id,
+        currentDecision: hasDecision ? action.response : state.currentDecision,
+        pendingAction:
+          state.pendingAction ?? action.response.pending_action ?? null,
+        pendingDecision: state.pendingAction
+          ? state.pendingDecision
+          : action.response.pending_action
+            ? action.response
+            : null,
         audit_id: action.response.audit_id,
-        executionResult: null,
-        actionResponse: null,
+        actionResponse:
+          hasDecision && !state.pendingAction ? null : state.actionResponse,
         uncertain:
           state.uncertain || action.response.status === "execution_unknown",
         error: null,
@@ -120,8 +133,10 @@ export function demoReducer(state: DemoState, action: DemoAction): DemoState {
     case "action":
       return {
         ...state,
+        currentDecision: state.pendingDecision ?? state.currentDecision,
         actionResponse: action.response,
         pendingAction: null,
+        pendingDecision: null,
         audit_id: action.response.audit_id,
         executionResult: action.response.execution_result,
         uncertain:
@@ -134,6 +149,28 @@ export function demoReducer(state: DemoState, action: DemoAction): DemoState {
         error: action.message,
         uncertain: state.uncertain || !!action.uncertain,
         pendingAction: action.invalidatePending ? null : state.pendingAction,
+        pendingDecision: action.invalidatePending
+          ? null
+          : state.pendingDecision,
+      };
+    case "newConversation":
+      if (
+        state.pendingAction ||
+        state.uncertain ||
+        state.loading.chat ||
+        state.loading.action
+      )
+        return state;
+      return {
+        ...state,
+        conversation_id: null,
+        messages: [],
+        currentDecision: null,
+        pendingDecision: null,
+        actionResponse: null,
+        executionResult: null,
+        audit_id: null,
+        error: null,
       };
     case "auditStart":
       return {

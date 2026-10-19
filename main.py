@@ -16,6 +16,7 @@ from api.responses import (
     decision_scope, install_error_handlers, record_decision, secure_response,
 )
 from agent.llm_agent import ARGUMENT_MODELS, AgentError, AgentPause, BankingAgent, execute_tool, render_result
+from agent.sessions import SessionError, SessionStore
 from database.db import PROJECT_DIR, init_db
 from deepseek_client import DeepSeekHTTPClient
 from security import AuditLogger, PendingActionManager, PermissionController, RiskEngine
@@ -30,7 +31,7 @@ def execute_saved_action(account_id: str, action: str, params: dict) -> dict:
 
 
 def audited_execute_tool(name: str, raw_arguments: str, account_id: str, audit_logger: AuditLogger) -> dict:
-    """兼容入口保留直接执行行为，同时明确记录未应用确认的事实。"""
+    """只读兼容入口：风险与权限照常记录，任何写操作都不执行。"""
     model = ARGUMENT_MODELS.get(name)
     args = {}
     valid = False
@@ -52,10 +53,16 @@ def audited_execute_tool(name: str, raw_arguments: str, account_id: str, audit_l
         "require_verification": permission["require_verification"],
     })
     context["permission_action"] = permission["action"]
-    context["confirmation_status"] = "legacy_bypass" if valid and permission["action"] != "allow" else "not_required"
+    context["confirmation_status"] = "not_required" if permission["action"] == "allow" else "blocked"
     audit_logger.log_event("permission_decided", context, details={**permission, "mode": "legacy"})
-    audit_logger.log_event("tool_execution_started" if valid else "tool_validation_failed", context,
-                           execution_result="started" if valid else "not_executed")
+    if not valid:
+        result = execute_tool(name, raw_arguments, account_id)  # 仅返回白名单/参数错误，不会执行工具。
+        audit_logger.log_event("tool_validation_failed", context, execution_result="not_executed", details={"code": result["code"]})
+        return result
+    if valid and (name not in {"get_balance", "get_bills"} or permission["action"] != "allow"):
+        audit_logger.log_event("legacy_write_blocked", context, execution_result="not_executed")
+        return {"ok": False, "code": "LEGACY_WRITE_DISABLED", "error": "旧 /chat 仅兼容只读查询。转账请使用 /chat/secure，并遵循确认或强验证策略。"}
+    audit_logger.log_event("tool_execution_started", context, execution_result="started")
     try:
         result = execute_tool(name, raw_arguments, account_id)
     except Exception:
@@ -105,6 +112,7 @@ async def lifespan(app: FastAPI):
         client, model, tool_executor=partial(audited_execute_tool, audit_logger=app.state.audit_logger),
     ) if client else None
     app.state.pending_actions = PendingActionManager(execute_saved_action, audit_logger=app.state.audit_logger)
+    app.state.sessions = SessionStore()
     app.state.secure_agent = BankingAgent(
         client, model, tool_executor=partial(secure_execute_tool, manager=app.state.pending_actions,
                                              audit_logger=app.state.audit_logger),
@@ -118,7 +126,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Banking Agent AI", version="0.3.0", lifespan=lifespan,
-    responses={code: {"model": ErrorResponse} for code in (403, 404, 422, 500, 502, 503, 504)},
+    responses={code: {"model": ErrorResponse} for code in (403, 404, 409, 422, 429, 500, 502, 503, 504)},
 )
 install_error_handlers(app)
 
@@ -127,6 +135,7 @@ class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     message: str = Field(min_length=1, max_length=2000)
     account_id: str = Field(default="1001", min_length=1, max_length=64)
+    conversation_id: str | None = Field(default=None, min_length=32, max_length=32, pattern=r"^[0-9a-f]{32}$")
 
     @field_validator("message", "account_id")
     @classmethod
@@ -147,6 +156,8 @@ class SecureChatResponse(ChatResponse):
     status: Literal["completed", "pending", "require_verification", "failed", "needs_input", "partial", "execution_unknown"]
     request_id: str
     message: str
+    response_kind: Literal["conversation", "capabilities", "clarification", "unsupported", "business_result"]
+    conversation_id: str
     action_id: str | None = None
     risk_level: Literal["green", "yellow", "red"] | None = None
     operation: str | None = None
@@ -217,7 +228,21 @@ async def run_audited_chat(body: ChatRequest, request: Request, secure: bool):
                 logger.log_after_execution("request_failed", context, details={"code": "LLM_NOT_CONFIGURED"})
                 raise APIError(503, "LLM_NOT_CONFIGURED", "请在 .env 中配置 DEEPSEEK_API_KEY，然后重启服务。")
             try:
-                response = await agent.run(body.message, body.account_id)
+                if secure:
+                    with request.app.state.sessions.checkout(body.account_id, body.conversation_id) as (session, history):
+                        pending = request.app.state.pending_actions.get_pending_action(body.account_id, session.pending_action_id) if session.pending_action_id else None
+                        if pending is None:
+                            session.pending_action_id = None
+                        response = await agent.run(body.message, body.account_id, history=history, allow_transfer=pending is None)
+                        response["conversation_id"] = session.conversation_id
+                        if response.get("pending_action"):
+                            session.pending_action_id = response["pending_action"]["action_id"]
+                        request.app.state.sessions.remember(session, body.message, response)
+                else:
+                    response = await agent.run(body.message, body.account_id)
+            except SessionError as exc:
+                logger.log_after_execution("request_failed", context, details={"code": exc.code})
+                raise APIError(exc.status_code, exc.code, str(exc)) from None
             except AgentError as exc:
                 logger.log_after_execution("request_failed", context, details={"http_status": exc.status_code})
                 code = "LLM_TIMEOUT" if exc.status_code == 504 else "LLM_SERVICE_ERROR"

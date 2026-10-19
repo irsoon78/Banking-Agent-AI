@@ -13,16 +13,18 @@ import {
 import { RiskPanel } from "../components/RiskPanel";
 import { AuditTimeline } from "../components/AuditTimeline";
 
-const examples = ["查询我的余额", "给账户1002转500元", "给账户1002转5000元"];
+const examples = [
+  "你好",
+  "你能做什么？",
+  "查询我的余额",
+  "给账户1002转500元",
+  "给账户1002转5000元",
+];
 export function ChatPage() {
-  const { state, sendMessage } = useDemo();
+  const { state, sendMessage, newConversation } = useDemo();
   const [draft, setDraft] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
-  const blocked =
-    state.loading.chat ||
-    state.loading.action ||
-    !!state.pendingAction ||
-    state.uncertain;
+  const blocked = state.loading.chat || state.loading.action || state.uncertain;
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [state.messages.length, state.loading.chat]);
@@ -73,7 +75,13 @@ export function ChatPage() {
                 {state.loading.chat ? "正在等待后端响应…" : "自然语言银行助手"}
               </span>
             </div>
-            <span className="badge tone-blue">安全入口</span>
+            <button
+              className="button secondary"
+              disabled={blocked || !!state.pendingAction}
+              onClick={newConversation}
+            >
+              新对话
+            </button>
           </div>
           <div
             className="messages"
@@ -137,8 +145,8 @@ export function ChatPage() {
           </div>
           {state.pendingAction && (
             <div className="composer-notice">
-              有一笔待确认任务，请先 <Link to="/risk">确认或取消</Link>
-              ，再发送新指令。
+              原任务仍在等待 <Link to="/risk">确认或取消</Link>
+              。可以继续聊天、查询；新转账不会替换这笔任务。
             </div>
           )}
           {state.uncertain && (
@@ -157,7 +165,7 @@ export function ChatPage() {
               value={draft}
               disabled={blocked}
               onChange={(event) => setDraft(event.target.value)}
-              placeholder="例如：查询我的余额"
+              placeholder="可以打个招呼，也可以让我查余额或办理模拟转账"
               onKeyDown={(event) => {
                 if (
                   event.key === "Enter" &&

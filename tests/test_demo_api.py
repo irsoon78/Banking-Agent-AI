@@ -209,7 +209,8 @@ class DemoAPITests(DatabaseFixture, unittest.TestCase):
     def test_no_tool_call_does_not_invent_a_green_decision(self):
         with self.sdk_client([completion(content='{"risk_level":"green","permission_action":"allow"}')]) as (client, _):
             response = client.post("/chat/secure", json={"message": "你好"}).json()
-            self.assertEqual(response["status"], "needs_input")
+            self.assertEqual(response["status"], "completed")
+            self.assertEqual(response["response_kind"], "conversation")
             self.assertEqual(response["decisions"], [])
             self.assertIsNone(response.get("risk_level"))
             self.assertIsNone(response.get("permission_action"))
@@ -290,13 +291,16 @@ class DemoAPITests(DatabaseFixture, unittest.TestCase):
                 errors = schema["paths"][path]["post"]["responses"]["422"]
                 self.assertTrue(errors["content"]["application/json"]["schema"]["$ref"].endswith("ErrorResponse"))
 
-    def test_legacy_chat_keeps_original_success_shape_and_transfer_behavior(self):
-        with self.sdk_client([self.transfer("5000")]) as (client, _):
-            response = client.post("/chat", json={"message": "给1002转5000元"}).json()
-            self.assertEqual(set(response), {"status", "reply", "tool_results"})
-            self.assertEqual(response["status"], "completed")
-            self.assertEqual(response["tool_results"][0]["result"]["amount"], "5000.00")
-            self.assertEqual(get_balance("1001")["balance"], "5000.00")
+    def test_legacy_chat_keeps_shape_but_rejects_yellow_and_red_transfers(self):
+        for amount in ("500", "5000"):
+            with self.subTest(amount=amount), self.sdk_client([self.transfer(amount)]) as (client, _):
+                response = client.post("/chat", json={"message": f"给1002转{amount}元"}).json()
+                self.assertEqual(set(response), {"status", "reply", "tool_results"})
+                self.assertEqual(response["status"], "failed")
+                self.assertEqual(response["tool_results"][0]["result"]["code"], "LEGACY_WRITE_DISABLED")
+                self.assertEqual(get_balance("1001")["balance"], "10000.00")
+                self.assertEqual(get_balance("1002")["balance"], "5000.00")
+                self.assertEqual(app.state.pending_actions._pending, {})
 
     def test_partial_llm_timeout_retains_completed_query_and_decision(self):
         with self.sdk_client([completion("get_balance"), httpx.ReadTimeout("offline")]) as (client, _):

@@ -79,6 +79,13 @@ export interface ToolData {
   audit_warning?: string;
 }
 export interface SecureResponse extends Partial<Decision> {
+  response_kind:
+    | "conversation"
+    | "capabilities"
+    | "clarification"
+    | "unsupported"
+    | "business_result";
+  conversation_id: string;
   status: SecureStatus;
   message: string;
   reply: string;

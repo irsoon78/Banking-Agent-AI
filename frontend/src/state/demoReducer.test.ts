@@ -12,11 +12,26 @@ const pending: PendingAction = {
   created_at: "2026-01-01T00:00:00Z",
 };
 const decision: SecureResponse = {
+  response_kind: "business_result",
+  conversation_id: "test-conversation",
   status: "pending",
   message: "test",
   reply: "test",
   tool_results: [],
-  decisions: [],
+  decisions: [
+    {
+      operation: "transfer_money",
+      risk_level: "yellow",
+      risk_reason: "test",
+      permission_action: "pending_confirmation",
+      require_confirmation: true,
+      require_verification: false,
+    },
+  ],
+  risk_level: "yellow",
+  permission_action: "pending_confirmation",
+  require_confirmation: true,
+  require_verification: false,
   audit_id: "test-chain",
   request_id: "test-chain",
   action_id: pending.action_id,
@@ -98,4 +113,116 @@ test("expired task is removed without inventing a success result", () => {
   });
   assert.equal(after.pendingAction, null);
   assert.equal(after.executionResult, null);
+});
+
+const greeting: SecureResponse = {
+  response_kind: "conversation",
+  conversation_id: "test-conversation",
+  status: "completed",
+  message: "你好",
+  reply: "你好",
+  tool_results: [],
+  decisions: [],
+  request_id: "greeting-chain",
+  audit_id: "greeting-chain",
+};
+test("conversation preserves pending parameters, original decision and audit link", () => {
+  const before = demoReducer(initialState, {
+    type: "chat",
+    response: decision,
+  });
+  const after = demoReducer(before, { type: "chat", response: greeting });
+  assert.equal(after.pendingAction, before.pendingAction);
+  assert.equal(after.pendingDecision, decision);
+  assert.equal(after.pendingDecision?.audit_id, "test-chain");
+  assert.equal(after.currentDecision, decision);
+  assert.equal(after.executionResult, null);
+  assert.equal(after.audit_id, "greeting-chain");
+});
+test("read-only query can update latest decision without replacing the pending authorization", () => {
+  const before = demoReducer(initialState, {
+    type: "chat",
+    response: decision,
+  });
+  const query: SecureResponse = {
+    ...greeting,
+    response_kind: "business_result",
+    decisions: [
+      {
+        operation: "get_balance",
+        risk_level: "green",
+        risk_reason: "query",
+        permission_action: "allow",
+        require_confirmation: false,
+        require_verification: false,
+      },
+    ],
+  };
+  const after = demoReducer(before, { type: "chat", response: query });
+  assert.equal(after.currentDecision, query);
+  assert.equal(after.pendingDecision, decision);
+  assert.equal(after.pendingAction?.action_id, pending.action_id);
+});
+test("unexpected second pending response cannot overwrite the original task", () => {
+  const before = demoReducer(initialState, {
+    type: "chat",
+    response: decision,
+  });
+  const after = demoReducer(before, {
+    type: "chat",
+    response: {
+      ...decision,
+      action_id: "other",
+      pending_action: {
+        ...pending,
+        action_id: "other",
+        params: { amount: "999", to_account_id: "other" },
+      },
+    },
+  });
+  assert.deepEqual(after.pendingAction, pending);
+  assert.equal(after.pendingDecision, decision);
+});
+test("confirm after conversation retains original decision and real receipt", () => {
+  const before = demoReducer(
+    demoReducer(initialState, { type: "chat", response: decision }),
+    { type: "chat", response: greeting },
+  );
+  const result = { ok: true, simulated: true, transfer_id: "isolated-receipt" };
+  const after = demoReducer(before, {
+    type: "action",
+    response: {
+      status: "completed",
+      message: "test",
+      audit_id: "test-chain",
+      request_id: "test-chain",
+      action_id: pending.action_id,
+      execution_result: result,
+    },
+  });
+  assert.equal(after.currentDecision, decision);
+  assert.equal(after.pendingAction, null);
+  assert.equal(after.pendingDecision, null);
+  assert.equal(after.executionResult, result);
+  const greeted = demoReducer(after, { type: "chat", response: greeting });
+  assert.equal(greeted.executionResult, result);
+  assert.equal(greeted.actionResponse, after.actionResponse);
+});
+test("new conversation cannot discard a pending task or clear an uncertainty lock", () => {
+  const before = demoReducer(initialState, {
+    type: "chat",
+    response: decision,
+  });
+  assert.equal(demoReducer(before, { type: "newConversation" }), before);
+  const unknown = demoReducer(initialState, {
+    type: "error",
+    message: "unknown",
+    uncertain: true,
+  });
+  assert.equal(demoReducer(unknown, { type: "newConversation" }), unknown);
+  const clean = demoReducer(initialState, { type: "chat", response: greeting });
+  assert.equal(
+    demoReducer(clean, { type: "newConversation" }).conversation_id,
+    null,
+  );
 });

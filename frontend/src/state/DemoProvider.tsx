@@ -11,13 +11,15 @@ import { banking } from "../api/banking";
 import { RequestError } from "../api/client";
 import { demoReducer, initialState } from "./demoReducer";
 import type { DemoState, Message } from "./demoReducer";
+import { LatestRead } from "./latestRead";
 
 interface DemoContextValue {
   state: DemoState;
-  refreshOverview: () => Promise<void>;
+  refreshOverview: (force?: boolean) => Promise<void>;
   sendMessage: (message: string) => Promise<void>;
   resolveAction: (confirm: boolean) => Promise<void>;
   loadAudit: (filter?: string, offset?: number) => Promise<void>;
+  newConversation: () => void;
 }
 const DemoContext = createContext<DemoContextValue | null>(null);
 const explain = (error: unknown) =>
@@ -28,7 +30,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
   const stateRef = useRef(state);
   stateRef.current = state;
   const mutationLock = useRef(false);
-  const overviewPromise = useRef<Promise<void> | null>(null);
+  const overviewRead = useRef(new LatestRead());
   const auditSequence = useRef(0);
   const message = (entry: Omit<Message, "id">) =>
     dispatch({
@@ -36,10 +38,9 @@ export function DemoProvider({ children }: { children: ReactNode }) {
       message: { ...entry, id: crypto.randomUUID() },
     });
 
-  const refreshOverview = useCallback((): Promise<void> => {
-    if (overviewPromise.current) return overviewPromise.current;
-    dispatch({ type: "loading", key: "overview", value: true });
-    overviewPromise.current = (async () => {
+  const refreshOverview = useCallback((force = false): Promise<void> => {
+    return overviewRead.current.run(async (isLatest) => {
+      dispatch({ type: "loading", key: "overview", value: true });
       const account = stateRef.current.account_id;
       const [health, balance, bills] = await Promise.allSettled([
         banking.health(),
@@ -54,6 +55,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
           ? [result.value.audit_warning]
           : [],
       );
+      if (!isLatest()) return;
       dispatch({
         type: "overview",
         health: health.status === "fulfilled" ? health.value : null,
@@ -62,11 +64,8 @@ export function DemoProvider({ children }: { children: ReactNode }) {
         error: [...new Set([...errors, ...warnings])].join("；") || null,
         updatedAt: new Date().toISOString(),
       });
-    })().finally(() => {
       dispatch({ type: "loading", key: "overview", value: false });
-      overviewPromise.current = null;
-    });
-    return overviewPromise.current;
+    }, force);
   }, []);
 
   const loadAudit = useCallback(async (filter = "", offset = 0) => {
@@ -102,7 +101,6 @@ export function DemoProvider({ children }: { children: ReactNode }) {
         !text ||
         text.length > 2000 ||
         mutationLock.current ||
-        current.pendingAction ||
         current.uncertain
       )
         return;
@@ -111,10 +109,17 @@ export function DemoProvider({ children }: { children: ReactNode }) {
       dispatch({ type: "error", message: null });
       message({ role: "user", text });
       try {
-        const response = await banking.chat(current.account_id, text);
+        const response = await banking.chat(
+          current.account_id,
+          text,
+          current.conversation_id,
+        );
         dispatch({ type: "chat", response });
         message({ role: "assistant", text: response.message, response });
-        await Promise.all([refreshOverview(), loadAudit(response.audit_id)]);
+        await Promise.all([
+          response.tool_results.length ? refreshOverview() : Promise.resolve(),
+          loadAudit(response.audit_id),
+        ]);
       } catch (error) {
         dispatch({
           type: "error",
@@ -138,7 +143,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
     async (confirm: boolean) => {
       const current = stateRef.current;
       const pending = current.pendingAction;
-      const decision = current.currentDecision;
+      const decision = current.pendingDecision;
       if (
         mutationLock.current ||
         current.uncertain ||
@@ -162,7 +167,10 @@ export function DemoProvider({ children }: { children: ReactNode }) {
         );
         dispatch({ type: "action", response });
         message({ role: "assistant", text: response.message, response });
-        await Promise.all([refreshOverview(), loadAudit(response.audit_id)]);
+        await Promise.all([
+          refreshOverview(true),
+          loadAudit(response.audit_id),
+        ]);
       } catch (error) {
         const notFound =
           error instanceof RequestError && error.code === "ACTION_NOT_FOUND";
@@ -185,9 +193,19 @@ export function DemoProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void refreshOverview();
   }, [refreshOverview]);
+  const newConversation = useCallback(() => {
+    if (!mutationLock.current) dispatch({ type: "newConversation" });
+  }, []);
   return (
     <DemoContext.Provider
-      value={{ state, refreshOverview, sendMessage, resolveAction, loadAudit }}
+      value={{
+        state,
+        refreshOverview,
+        sendMessage,
+        resolveAction,
+        loadAudit,
+        newConversation,
+      }}
     >
       {children}
     </DemoContext.Provider>

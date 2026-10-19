@@ -50,7 +50,11 @@ export async function request<T>(path: string, body?: object): Promise<T> {
       data.message || `请求失败（HTTP ${response.status}）`,
       data.error_code || "HTTP_ERROR",
       response.status,
-      !!body && response.status >= 500,
+      !!body &&
+        response.status >= 500 &&
+        !["LLM_NOT_CONFIGURED", "LLM_SERVICE_ERROR", "LLM_TIMEOUT"].includes(
+          data.error_code || "",
+        ),
     );
   }
   return data;

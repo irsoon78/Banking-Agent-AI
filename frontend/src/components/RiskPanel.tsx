@@ -13,7 +13,9 @@ import {
 
 export function RiskPanel({ actionable = false }: { actionable?: boolean }) {
   const { state, resolveAction } = useDemo();
-  const decision = state.currentDecision;
+  const decision = state.pendingAction
+    ? state.pendingDecision
+    : state.currentDecision;
   if (!decision)
     return (
       <section className="panel risk-panel">
@@ -23,7 +25,11 @@ export function RiskPanel({ actionable = false }: { actionable?: boolean }) {
         <Empty>发送一条指令，查看后端返回的风险判断。</Empty>
       </section>
     );
-  const status = state.actionResponse?.status || decision.status;
+  const matchingResult =
+    state.actionResponse?.action_id === decision.action_id
+      ? state.actionResponse
+      : null;
+  const status = matchingResult?.status || decision.status;
   const pending = state.pendingAction;
   const canConfirm =
     decision.status === "pending" &&
@@ -48,7 +54,9 @@ export function RiskPanel({ actionable = false }: { actionable?: boolean }) {
         <h2>
           <Icon name="shield" /> 风险与权限
         </h2>
-        <span className="live-label">服务端决策</span>
+        <span className="live-label">
+          {pending ? "原待确认任务" : "最近业务决策"}
+        </span>
       </div>
       <div className={`risk-heading tone-${decision.risk_level || "neutral"}`}>
         <strong>
@@ -142,12 +150,12 @@ export function RiskPanel({ actionable = false }: { actionable?: boolean }) {
             进入风险确认 <Icon name="arrow" />
           </Link>
         ))}
-      {state.actionResponse && <Receipt response={state.actionResponse} />}
-      {state.actionResponse?.audit_warning && (
-        <Alert>{state.actionResponse.audit_warning}</Alert>
+      {matchingResult && <Receipt response={matchingResult} />}
+      {matchingResult?.audit_warning && (
+        <Alert>{matchingResult.audit_warning}</Alert>
       )}
       <div className="message-links">
-        <AuditLink id={state.audit_id} />
+        <AuditLink id={decision.audit_id} />
         {actionable && (
           <Link className="text-link" to="/chat">
             返回 AI 对话
