@@ -29,7 +29,7 @@ class SecurityDecision(BaseModel):
 
 
 class ActionResponse(BaseModel):
-    status: Literal["completed", "cancelled", "failed", "execution_unknown"]
+    status: Literal["completed", "cancelled", "failed", "execution_unknown", "require_verification"]
     message: str
     execution_result: dict = Field(default_factory=dict)
     audit_id: str
@@ -41,6 +41,7 @@ class ActionResponse(BaseModel):
     audit_warning: str | None = None
     error_code: str | None = None
     error: ErrorResponse | None = None
+    decision: SecurityDecision | None = None
 
 
 class APIError(HTTPException):

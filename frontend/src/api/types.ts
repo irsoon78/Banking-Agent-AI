@@ -100,7 +100,7 @@ export interface SecureResponse extends Partial<Decision> {
   error?: ApiErrorBody;
 }
 export interface ActionResponse {
-  status: "completed" | "cancelled" | "failed" | "execution_unknown";
+  status: "completed" | "cancelled" | "failed" | "execution_unknown" | "require_verification";
   message: string;
   execution_result: ToolData;
   audit_id: string;
@@ -112,6 +112,7 @@ export interface ActionResponse {
   audit_warning?: string;
   error_code?: string;
   error?: ApiErrorBody;
+  decision?: Decision;
 }
 export interface AuditLog {
   id: number;

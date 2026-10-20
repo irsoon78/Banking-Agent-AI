@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { demoReducer, initialState } from "./demoReducer.ts";
-import type { AuditLog, PendingAction, SecureResponse } from "../api/types.ts";
+import { demoReducer, hasExecutionReceipt, initialState } from "./demoReducer.ts";
+import type { ActionResponse, AuditLog, PendingAction, SecureResponse } from "../api/types.ts";
 
 const pending: PendingAction = {
   action_id: "test-action",
@@ -126,6 +126,41 @@ const greeting: SecureResponse = {
   request_id: "greeting-chain",
   audit_id: "greeting-chain",
 };
+test("confirmation recheck replaces the original yellow decision with the server red block", () => {
+  const before = demoReducer(initialState, { type: "chat", response: decision });
+  const latest = {
+    operation: "transfer_money",
+    risk_level: "red" as const,
+    risk_reason: "北京时间当日累计超过1000元",
+    permission_action: "require_verification" as const,
+    require_confirmation: false,
+    require_verification: true,
+  };
+  const after = demoReducer(before, {
+    type: "action",
+    response: { status: "require_verification", message: "尚未执行", execution_result: { ok: false, code: "VERIFICATION_REQUIRED" },
+      audit_id: decision.audit_id, request_id: decision.request_id, action_id: pending.action_id, decision: latest },
+  });
+  assert.equal(after.pendingAction, null);
+  assert.equal(after.pendingDecision, null);
+  assert.equal(after.currentDecision?.risk_level, "red");
+  assert.equal(after.currentDecision?.permission_action, "require_verification");
+  assert.equal(after.currentDecision?.status, "require_verification");
+  assert.deepEqual(after.currentDecision?.decisions, [latest]);
+  assert.equal(after.executionResult?.transfer_id, undefined);
+  assert.equal(after.currentDecision?.audit_id, decision.audit_id);
+  assert.equal(before.pendingAction?.action_id, pending.action_id);
+});
+test("only successful execution evidence can render a transfer receipt", () => {
+  const success: ActionResponse = { status: "completed", message: "已完成", audit_id: "audit", request_id: "request",
+    execution_result: { ok: true, transfer_id: "server-transfer" } };
+  assert.equal(hasExecutionReceipt(success), true);
+  for (const status of ["require_verification", "failed", "execution_unknown", "cancelled"] as const)
+    assert.equal(hasExecutionReceipt({ ...success, status }), false);
+  assert.equal(hasExecutionReceipt({ ...success, execution_result: { ok: false, transfer_id: "fake" } }), false);
+  assert.equal(hasExecutionReceipt({ ...success, execution_result: {} }), false);
+  assert.equal(hasExecutionReceipt({ ...success, execution_result: { ok: true, transfer_id: " " } }), false);
+});
 test("conversation preserves pending parameters, original decision and audit link", () => {
   const before = demoReducer(initialState, {
     type: "chat",

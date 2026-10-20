@@ -39,7 +39,8 @@ class AuditLogger:
         finally:
             _request_context.reset(token)
 
-    def log_event(self, event_type: str, context: dict, *, details: dict | None = None, **changes) -> int:
+    def log_event(self, event_type: str, context: dict, *, details: dict | None = None,
+                  db_connection: sqlite3.Connection | None = None, **changes) -> int:
         record = {**context, **changes}
         record.setdefault("request_id", uuid4().hex)
         if not isinstance(event_type, str) or not event_type.strip():
@@ -49,18 +50,24 @@ class AuditLogger:
         if not isinstance(record.get("user_request", ""), str):
             raise ValueError("user_request 必须为字符串")
         encoded = json.dumps(details or {}, ensure_ascii=False, default=str, allow_nan=False)
+
+        def insert(conn):
+            cursor = conn.execute(
+                "INSERT INTO audit_logs (request_id, action_id, event_type, account_id, "
+                "user_request, operation, risk_level, permission_action, confirmation_status, "
+                "execution_result, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (record["request_id"], record.get("action_id"), event_type, record["account_id"],
+                 record.get("user_request", ""), record.get("operation"), record.get("risk_level"),
+                 record.get("permission_action"), record.get("confirmation_status", "not_required"),
+                 record.get("execution_result", "not_executed"), encoded),
+            )
+            return cursor.lastrowid
+
         try:
+            if db_connection is not None:
+                return insert(db_connection)  # 使用调用者事务，不能另开连接争抢写锁。
             with connection() as conn:
-                cursor = conn.execute(
-                    "INSERT INTO audit_logs (request_id, action_id, event_type, account_id, "
-                    "user_request, operation, risk_level, permission_action, confirmation_status, "
-                    "execution_result, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (record["request_id"], record.get("action_id"), event_type, record["account_id"],
-                     record.get("user_request", ""), record.get("operation"), record.get("risk_level"),
-                     record.get("permission_action"), record.get("confirmation_status", "not_required"),
-                     record.get("execution_result", "not_executed"), encoded),
-                )
-                event_id = cursor.lastrowid
+                event_id = insert(conn)
             return event_id
         except (sqlite3.Error, OSError):
             raise AuditError("审计数据库暂时不可用。") from None

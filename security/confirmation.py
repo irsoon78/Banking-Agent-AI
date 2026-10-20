@@ -1,4 +1,4 @@
-"""待确认操作及黄色确认流程；不依赖 LLM、HTTP 或数据库。"""
+"""待确认操作及黄色确认流程；预评估可注入，真实资金仍由事务内安全执行器复核。"""
 
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -9,6 +9,7 @@ from uuid import uuid4
 from security.audit import AUDIT_WARNING, AuditLogger
 from security.permission import PermissionController
 from security.risk_engine import RiskEngine
+from security.transfer_grant import confirmed_transfer_scope
 
 Executor = Callable[[str, str, dict], dict]
 
@@ -20,13 +21,20 @@ class PendingActionManager:
     最多调用一次 executor；执行结果未知时也不自动重试。
     """
 
-    def __init__(self, executor: Executor, audit_logger: AuditLogger | None = None):
+    def __init__(self, executor: Executor, audit_logger: AuditLogger | None = None, *, risk_evaluator=None):
         self._executor = executor
         self._pending: dict[str, dict] = {}
         self._lock = Lock()
         self._risk_engine = RiskEngine()
         self._permissions = PermissionController()
         self._audit_logger = audit_logger
+        self._risk_evaluator = risk_evaluator
+
+    def _assess(self, account_id, action, params):
+        if self._risk_evaluator:
+            return self._risk_evaluator(account_id, action, params)
+        # 不连接账本的纯策略管理器可用于模拟执行器；真实资金工具仍强制事务内复核。
+        return self._risk_engine.evaluate(action, params.get("amount"))
 
     def _log(self, event_type: str, context: dict, **kwargs) -> None:
         if self._audit_logger:
@@ -50,9 +58,12 @@ class PendingActionManager:
             raise ValueError("params 必须为字典")
         params = deepcopy(params)
         # 风险由代码重新计算，不能通过传入 yellow 将红色操作降级。
-        risk = self._risk_engine.evaluate(action, params.get("amount"))
+        risk = self._assess(account_id, action, params)
         if risk_level != "yellow" or risk["risk_level"] != "yellow":
             raise ValueError("只有经过风险判断的 yellow 操作可以进入确认队列")
+        return self._save_pending(account_id, action, params, audit_context)
+
+    def _save_pending(self, account_id, action, params, audit_context):
         record = {
             "action_id": uuid4().hex,
             "account_id": account_id,
@@ -86,10 +97,11 @@ class PendingActionManager:
         if not isinstance(params, dict):
             raise ValueError("params 必须为字典")
         params = deepcopy(params)
-        risk = self._risk_engine.evaluate(action, params.get("amount"))
+        risk = self._assess(account_id, action, params)
         context = self._audit_logger.context(account_id, action) if self._audit_logger else {}
         context["risk_level"] = risk["risk_level"]
-        self._log("risk_evaluated", context, details={"reason": risk["reason"]})
+        self._log("risk_evaluated", context, details={"reason": risk["reason"], "stage": "prepare",
+                                                    "daily_limit": risk.get("daily_limit"), "risk_error": risk.get("risk_error")})
         permission = self._permissions.decide(action, risk["risk_level"])
         # 把同一次确定性判断交给 API 展示，不由 API 或模型重新推断权限。
         decision = {
@@ -110,7 +122,7 @@ class PendingActionManager:
                 **decision, "status": "require_verification",
                 "message": "该操作需要强验证，尚未执行。",
             }
-        pending = self.create_pending_action(account_id, action, params, risk["risk_level"], context)
+        pending = self._save_pending(account_id, action, params, context)
         return {
             **decision, "status": "pending",
             "message": f"转账 {pending['params']['amount']} 元，需要用户确认，尚未执行。",
@@ -133,7 +145,8 @@ class PendingActionManager:
             self._log("confirmation_confirmed" if confirmed else "confirmation_cancelled", context)
             if confirmed:
                 # 审计不可用时不领取任务、不执行，恢复后仍可确认。
-                self._log("tool_execution_started", context, execution_result="started")
+                self._log("tool_execution_started", context, execution_result="started",
+                          details={"stage": "confirmation_gate", "funds_committed": False})
             # 执行前原子领取，防止双击、并发确认或取消触发重复资金操作。
             record = self._pending.pop(action_id)
         if not confirmed:
@@ -153,7 +166,11 @@ class PendingActionManager:
         if not started:
             self._log("tool_execution_started", context, execution_result="started")
         try:
-            result = self._executor(account_id, action, params)
+            if action in RiskEngine.TRANSFER_OPERATIONS and started:
+                with confirmed_transfer_scope(account_id, params, self._audit_logger, context):
+                    result = self._executor(account_id, action, params)
+            else:
+                result = self._executor(account_id, action, params)
             if not isinstance(result, dict) or type(result.get("ok")) is not bool:
                 raise ValueError("执行器返回值不符合工具协议")
         except Exception:
@@ -163,12 +180,16 @@ class PendingActionManager:
                 "message": "操作执行结果未知，请先查询账单，不要重复确认或重新转账。",
             }
         else:
-            response = {
-                "status": "completed" if result["ok"] else "failed", "action": action,
-                "message": "操作已完成。" if result["ok"] else "操作执行失败，请查看工具结果。",
-                "result": result,
-            }
-        outcome = {"completed": "success", "failed": "failed", "execution_unknown": "unknown"}[response["status"]]
+            status = "completed" if result["ok"] else (
+                "execution_unknown" if result.get("execution_unknown") else
+                "require_verification" if result.get("code") == "VERIFICATION_REQUIRED" else "failed"
+            )
+            response = {"status": status, "action": action,
+                        "message": "操作已完成。" if result["ok"] else result.get("error", "操作执行失败，请查看工具结果。"),
+                        "result": result}
+            if result.get("security_decision"):
+                response["decision"] = result["security_decision"]
+        outcome = {"completed": "success", "failed": "failed", "execution_unknown": "unknown", "require_verification": "not_executed"}[response["status"]]
         if self._audit_logger and not self._audit_logger.log_after_execution(
             "tool_executed", context, execution_result=outcome,
             details={"result": response.get("result"), "status": response["status"]},

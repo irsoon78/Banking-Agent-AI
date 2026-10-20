@@ -19,6 +19,13 @@ from main import app
 from tools.account import get_balance
 from tools.bill import get_bills
 from tools.transfer import transfer_money
+from security.transfer_grant import confirmed_transfer_scope
+
+
+def confirmed_test_transfer(sender, recipient, amount):
+    """仅在隔离测试中模拟已领取确认；生产代码不能通过请求参数获得此许可。"""
+    with confirmed_transfer_scope(sender, {"to_account_id": recipient, "amount": amount}):
+        return transfer_money(sender, recipient, amount)
 
 
 class DatabaseFixture:
@@ -39,13 +46,13 @@ class DatabaseFixture:
 class BankingTests(DatabaseFixture, unittest.TestCase):
     def test_initial_data_and_restart(self):
         self.assertEqual(get_balance("1001")["balance"], "10000.00")
-        transfer_money("1001", "1002", "0.01")
+        confirmed_test_transfer("1001", "1002", "0.01")
         init_db()
         self.assertEqual(get_balance("1001")["balance"], "9999.99")
         self.assertEqual(len(get_bills("1001")["bills"]), 2)
 
     def test_transfer_updates_both_balances_and_linked_bills(self):
-        result = transfer_money("1001", "1002", "100.50")
+        result = confirmed_test_transfer("1001", "1002", "100.50")
         self.assertTrue(result["ok"])
         self.assertEqual(get_balance("1001")["balance"], "9899.50")
         self.assertEqual(get_balance("1002")["balance"], "5100.50")
@@ -60,14 +67,14 @@ class BankingTests(DatabaseFixture, unittest.TestCase):
     def test_invalid_transfers_leave_data_unchanged(self):
         for amount in ("0", "-1", "1.001", "NaN", "1e2", "Infinity", "", "99999999999", 1.2, True):
             with self.subTest(amount=amount):
-                self.assertFalse(transfer_money("1001", "1002", amount)["ok"])
+                self.assertFalse(confirmed_test_transfer("1001", "1002", amount)["ok"])
         for sender, recipient, amount, code in (
-            ("1001", "1002", "10000.01", "INSUFFICIENT_FUNDS"),
+            ("1001", "1002", "10000.01", "VERIFICATION_REQUIRED"),
             ("1001", "1001", "1", "SAME_ACCOUNT"),
             ("1001", "missing", "1", "ACCOUNT_NOT_FOUND"),
             ("missing", "1002", "1", "ACCOUNT_NOT_FOUND"),
         ):
-            self.assertEqual(transfer_money(sender, recipient, amount)["code"], code)
+            self.assertEqual(confirmed_test_transfer(sender, recipient, amount)["code"], code)
         self.assertEqual(get_balance("1001")["balance"], "10000.00")
         self.assertEqual(get_balance("1002")["balance"], "5000.00")
         self.assertEqual(len(get_bills("1001")["bills"]), 1)
@@ -79,17 +86,22 @@ class BankingTests(DatabaseFixture, unittest.TestCase):
                 WHEN NEW.kind = 'transfer_in'
                 BEGIN SELECT RAISE(ABORT, 'forced failure'); END
             """)
-        self.assertEqual(transfer_money("1001", "1002", "100")["code"], "DATABASE_ERROR")
+        self.assertEqual(confirmed_test_transfer("1001", "1002", "100")["code"], "DATABASE_ERROR")
         self.assertEqual(get_balance("1001")["balance"], "10000.00")
         self.assertEqual(get_balance("1002")["balance"], "5000.00")
         self.assertEqual(len(get_bills("1001")["bills"]), 1)
 
     def test_concurrent_transfers_cannot_overdraw(self):
+        # 使余额约束先于日累计阈值触发，继续验证真实并发余额保护。
+        with connection() as conn:
+            conn.execute("UPDATE accounts SET balance_cents=50000 WHERE account_id='1001'")
+            conn.execute("UPDATE bills SET amount_cents=50000 WHERE account_id='1001' AND kind='opening'")
         with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(lambda _: transfer_money("1001", "1002", "6000"), range(2)))
+            results = list(pool.map(lambda _: confirmed_test_transfer("1001", "1002", "300"), range(2)))
         self.assertEqual(sum(result["ok"] for result in results), 1)
-        self.assertEqual(get_balance("1001")["balance"], "4000.00")
-        self.assertEqual(get_balance("1002")["balance"], "11000.00")
+        self.assertEqual(next(result for result in results if not result["ok"])["code"], "INSUFFICIENT_FUNDS")
+        self.assertEqual(get_balance("1001")["balance"], "200.00")
+        self.assertEqual(get_balance("1002")["balance"], "5300.00")
 
     def test_queries_and_argument_validation(self):
         for tool in TOOLS:
@@ -250,8 +262,11 @@ class AgentTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_no_tool_never_returns_fabricated_data(self):
         result, _ = await self.run_agent([completion(content="转账成功，余额999999元。")])
-        self.assertEqual(result["status"], "needs_input")
-        self.assertEqual(result["response_kind"], "clarification")
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["response_kind"], "business_result")
+        self.assertEqual(result["tool_results"][0]["tool"], "get_balance")
+        self.assertEqual(result["tool_results"][0]["result"]["balance"], "10000.00")
+        self.assertIn("READ_FALLBACK", result["diagnostic_codes"])
         self.assertNotIn("999999", result["reply"])
         self.assertEqual(get_balance("1001")["balance"], "10000.00")
 

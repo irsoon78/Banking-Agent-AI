@@ -21,6 +21,7 @@ from database.db import PROJECT_DIR, init_db
 from deepseek_client import DeepSeekHTTPClient
 from security import AuditLogger, PendingActionManager, PermissionController, RiskEngine
 from security.audit import AUDIT_WARNING, AuditError
+from security.daily_limit import assess_operation
 
 load_dotenv(PROJECT_DIR / ".env")
 
@@ -42,7 +43,7 @@ def audited_execute_tool(name: str, raw_arguments: str, account_id: str, audit_l
         except (ValueError, TypeError, ValidationError):
             pass
     context = audit_logger.context(account_id, name)
-    risk = RiskEngine().evaluate(name, args.get("amount"))
+    risk = assess_operation(account_id, name, args) if valid else RiskEngine().evaluate(name, args.get("amount"))
     context["risk_level"] = risk["risk_level"]
     audit_logger.log_event("risk_evaluated", context, details={"reason": risk["reason"]})
     permission = PermissionController().decide(name, risk["risk_level"])
@@ -111,7 +112,8 @@ async def lifespan(app: FastAPI):
     app.state.agent = BankingAgent(
         client, model, tool_executor=partial(audited_execute_tool, audit_logger=app.state.audit_logger),
     ) if client else None
-    app.state.pending_actions = PendingActionManager(execute_saved_action, audit_logger=app.state.audit_logger)
+    app.state.pending_actions = PendingActionManager(execute_saved_action, audit_logger=app.state.audit_logger,
+                                                   risk_evaluator=assess_operation)
     app.state.sessions = SessionStore()
     app.state.secure_agent = BankingAgent(
         client, model, tool_executor=partial(secure_execute_tool, manager=app.state.pending_actions,
@@ -158,6 +160,7 @@ class SecureChatResponse(ChatResponse):
     message: str
     response_kind: Literal["conversation", "capabilities", "clarification", "unsupported", "business_result"]
     conversation_id: str
+    diagnostic_codes: list[str] = Field(default_factory=list)
     action_id: str | None = None
     risk_level: Literal["green", "yellow", "red"] | None = None
     operation: str | None = None
@@ -209,7 +212,7 @@ def finish_audit(logger: AuditLogger, context: dict, response: dict) -> None:
     response.setdefault("request_id", context["request_id"])
     logged = logger.log_after_execution(
         "request_returned", context, execution_result="not_applicable",
-        details={"status": response.get("status")},
+        details={"status": response.get("status"), "diagnostic_codes": response.get("diagnostic_codes", [])},
     )
     tool_warning = any(item["result"].get("audit_warning") for item in response.get("tool_results", []))
     if not logged or tool_warning or response.get("audit_warning"):
@@ -244,7 +247,7 @@ async def run_audited_chat(body: ChatRequest, request: Request, secure: bool):
                 logger.log_after_execution("request_failed", context, details={"code": exc.code})
                 raise APIError(exc.status_code, exc.code, str(exc)) from None
             except AgentError as exc:
-                logger.log_after_execution("request_failed", context, details={"http_status": exc.status_code})
+                logger.log_after_execution("request_failed", context, details={"http_status": exc.status_code, "diagnostic_code": exc.diagnostic_code})
                 code = "LLM_TIMEOUT" if exc.status_code == 504 else "LLM_SERVICE_ERROR"
                 raise APIError(exc.status_code, code, str(exc)) from None
             except Exception:

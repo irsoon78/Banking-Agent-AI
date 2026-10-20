@@ -4,7 +4,7 @@
 LLM 使用 **DeepSeek 官方兼容接口**，Python 调用仍使用 **OpenAI SDK**。
 支持自然对话、查询余额、查询最近账单和受控模拟转账；已有 React 演示前端。没有登录认证、MCP 或真实银行接入。
 
-**统一对话入口为 `/chat/secure`，确认/取消仍通过 `/confirm`、`/cancel`。旧 `/chat` 仅保留只读和非业务对话兼容，任何转账都会被后端拒绝。** V0.3.0 原协议见第 14 节，本轮增量与限制见第 15 节；第 9–14 节保留阶段历史，旧直接执行行为已被本轮安全加固替代。
+**统一对话入口为 `/chat/secure`，确认/取消仍通过 `/confirm`、`/cancel`。旧 `/chat` 仅保留只读和非业务对话兼容，任何转账都会被后端拒绝。转账现按北京时间业务日累计判断，并在确认事务内复核，见第 18 节。** V0.3.0 原协议见第 14 节；第 9–14 节保留阶段历史，旧单笔规则和直接执行行为已被后续安全加固替代。
 
 ## 1. 项目结构与文件职责
 
@@ -662,3 +662,87 @@ V0.3.0 当时不含 CORS、前端、任务持久化、过期策略或真实强�
 前端分别保存当前会话、最近业务决策、原待确认决策/参数与执行结果。新聊天不覆盖待确认任务；原任务风险卡保留原审计入口。交易后强制启动新的余额/账单读取，较早的读取不能覆盖较新结果。确定性的 LLM 服务错误正常展示，不伪造成功或自动重试。
 
 后端回归使用临时数据库及 MockTransport，前端运行 `npm test`、`npm run build`。不要使用当前演示数据库测试转账；不要将模拟模型测试描述为真实 DeepSeek 联网验证。
+
+## 16. 第一阶段人工验收缺陷修复（待完整回归）
+
+本次修改基于本地 checkpoint `27ef631`，尚未提交。保持 `tool_choice="auto"`、原风险阈值和确认流程，不新增业务场景。
+
+- `transfer_money` 的模型描述明确为提交服务端安全评估。明确的 500 元和 5000 元请求进入同一个执行器，分别由原 Risk Engine / PermissionController 返回黄色待确认和红色强验证阻断，不能由模型自行生成风险结论。
+- 仅当模型正常结束（`finish_reason: stop`）、没有工具调用且本轮尚无工具结果时，才尝试有限兜底。完整匹配“给账户1002转5000元”“请从账户1001向账户1002转账5000元”这类单笔命令；兜底只构建参数，继续调用注册的执行器。旧 `/chat` 和独立 Agent 默认执行器仍禁止写入。
+- 兜底不从历史或模型文本补参数，不删除小数点、引号或数字内部空格。否定、假设、引用、历史、未来、条件、多笔、账户不一致及歧义请求安全澄清。已有待确认任务不能替换。模型参数还须与用户原文一致，防止凭空补齐收款人、替换金额或切换转出账户。
+- “你能干嘛”等能力问句使用可信能力说明。明确的余额/最近账单查询也可以有限兜底，默认账单 10 条、最多 100 条，数据始终由真实工具查询；不把最近账单解释为完整月份或消费统计。
+- 未识别的完整表达会说明尚未取得工具结果，不统一声称缺少转账参数。真正缺参、意图拒绝、账户不符和已有任务分别澄清。有限语法以外的表述可能仍需用户改述；此解析器不保证任意自然语言的完整语义识别。
+- 网络/模型异常、空 choices、截断或拒绝响应、未知/多工具调用、参数错误、已有工具结果、执行结果未知均不能触发新的兜底或自动重试。
+
+`/chat/secure` 增加向后兼容的 `diagnostic_codes: string[]`。前端原有字段与状态不变，不需要使用该数组才能正常展示。`request_returned.details.diagnostic_codes` 保存同一数组；模型异常在 `request_failed.details.diagnostic_code` 中记录。仅记录代码生成的原因码，不保存完整模型响应、认证信息或额外账户数据。它们不替代 `risk_evaluated`、`permission_decided` 或执行审计。
+
+常见代码：`MODEL_NO_TOOL_CALL`、`TRANSFER_FALLBACK`、`READ_FALLBACK`、`MISSING_PARAMETERS`、`INTENT_REJECTED`、`ACCOUNT_MISMATCH`、`PENDING_EXISTS`、`TOOL_ARGUMENTS_INVALID`、`MODEL_CALL_ERROR`、`MODEL_TIMEOUT`、`MODEL_ERROR`、`EXECUTION_UNKNOWN`。`TRANSFER_FALLBACK` 表示识别路径，不能单独作为任务已创建或交易成功的凭据；必须结合实际状态和风险/权限审计。正常工具查询后的模型结束不标记为首次未调用工具。
+
+新增 `tests/test_intent_routing.py`，覆盖纯解析、安全执行器和审计、模拟模型下的 API 及默认只读执行器。新增转账识别测试拦截资金工具并断言调用次数为零，不调用确认接口。原有失败审计测试改为由用户显式提供不存在的收款账户，避免测试依赖模型猜测缺失参数。
+
+Codex 沙箱已知存在 asyncio 初始化阻塞，不为此改动业务异步代码。可在该环境执行同步检查：
+
+```powershell
+.\.venv\Scripts\python.exe -B -m unittest tests.test_intent_routing.IntentParserTests tests.test_intent_routing.SafeDecisionTests tests.test_risk_engine tests.test_permission tests.test_conversation.SessionTests tests.test_confirmation.PendingActionTests -v
+```
+
+完整后端回归请在本机新的 PowerShell 终端、项目根目录执行（只设置当前终端环境，测试使用模拟模型和各自临时数据库）：
+
+```powershell
+$bankingTestTemp = Join-Path (Get-Location).Path ('.cache\regression-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $bankingTestTemp -ErrorAction Stop | Out-Null
+$env:TEMP = $bankingTestTemp
+$env:TMP = $bankingTestTemp
+$env:TMPDIR = $bankingTestTemp
+$env:BANK_DB_PATH = Join-Path $bankingTestTemp 'fallback-test.db'
+$env:DEEPSEEK_API_KEY = ''
+.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
+```
+
+原 133 项基线通过来自用户本机报告，不代表本次修改后的 162 项已全部通过。同步检查、完整后端回归、真实 DeepSeek 联网和浏览器验收须分别记录。
+
+## 17. 基础自然对话定向修复（待本机完整回归与人工验收）
+
+上一轮 162/162 项后端通过来自用户本机 PowerShell；本节是在该工作区上的进一步未提交修改，不把旧结果记作新代码全部通过。
+
+- 输入侧按查询/操作语法、显式参数和咨询语法决定是否提供业务工具。没有业务请求证据的消息默认按对话处理，带账户和金额的规则咨询也不等于发出操作。没有为“真的吗”“为什么”等逐一建立回复模板。重复查询仍允许使用工具；普通回应不继承历史转账意图。工具资格只影响路由，不能授权执行。
+- 输出侧由 `agent/text_policy.py` 审查无工具文本，金融术语本身不再触发拒绝。正常能力说明、非数值规则解释、概念和上下文回答尽量保留模型原文；具体余额、账单数值、执行完成、资金到账、权限通过、卡片状态和结构化凭据保守拦截。含金额的风险规则使用原 Risk Engine 阈值生成可信说明，不照抄模型数值，也不生成风险/权限决策。
+- `text_response()` 区分正常对话、缺少业务结果、确实缺参、不可验证声明及空回复。空/过长的普通对话回复明确失败，不要求补转账参数。新增 `MODEL_EMPTY_TEXT`、`MODEL_TEXT_TOO_LONG`、`BUSINESS_RESULT_UNAVAILABLE`、`UNVERIFIED_FINANCIAL_CLAIM`、`UNSUPPORTED_CAPABILITY_CLAIM`、`FINANCIAL_TEXT_UNVERIFIED`、`TRUSTED_POLICY_EXPLANATION` 等代码，沿用现有诊断字段和审计，不记录原始模型响应。
+- 继续使用 SessionStore：模型获得服务端保存的用户和受控助手历史；业务结果只保存状态摘要，不能从历史恢复账本或授权。前端仍传递同一 `conversation_id`，原账户隔离、过期、待确认任务保护以及旧接口/默认执行器限制不变。没有修改 Risk Engine、PermissionController、确认/取消或资金工具。
+
+新增 `tests/test_basic_dialogue.py` 共 18 项测试（包含多组子用例），覆盖不同上下文/回复、能力追问、规则咨询、伪造金融事实与凭据、纯聊天中的幻觉工具、空回复与网络错误、历史与账户隔离、待确认任务保护及查询后追问。API 测试使用 MockTransport 与临时数据库，断言资金执行调用为零；会话追问还检查工具调用和实际风险审计没有被伪造。
+
+本次已执行同步后端回归 68/68、前端 11/11、TypeScript + Vite 构建及 Python AST 检查。完整测试静态发现为 180 项，尚未在 Codex 环境执行；请在本机按上一节独立临时目录的 PowerShell 命令运行完整回归。未进行真实 DeepSeek 联网或浏览器验收。
+
+文本审查仍是保守的规则防线，不是任意语言的语义证明；少见隐喻、混合语句及正常的数值解释可能回退，复杂业务表达也可能需要改述。执行安全继续由原服务端链路保证，不能把自由文本、对话完成状态或诊断代码当作账户事实、交易凭据或授权。
+
+## 18. 日累计转账风险与确认事务
+
+本 Demo 自行采用 **Asia/Shanghai 北京时间业务日**（现代北京时间 UTC+08:00，以标准库固定偏移实现，不依赖 Windows 时区数据包），这不是对官方指定时区的声明。以转出账户为单位计算：当前业务日已成功提交的转出金额 + 本笔拟转账金额。正数累计不超过 1000 元为黄色、需要风险卡确认；超过 1000 元为红色、需要强验证。当前没有强验证放行能力，拆分多笔不能突破累计限制。
+
+`security/daily_limit.py` 将北京时间零点转换为 UTC 左闭右开区间，直接对整个 `bills` 表中该账户的 `transfer_out.amount_cents` 求和，不调用最多 100 条的账单展示接口。初始入账、转入、待确认、取消及回滚交易不计入；实际已提交的转出即使后续审计或响应异常仍计入。金额使用整数分与 Decimal。查询、时间或事务异常不按零处理、不自动重试；异常账本记录保守阻断。没有新增累计表或迁移现有演示数据库。
+
+创建任务由 `assess_operation` 预评估。生产注册的风险预评估读取账本；独立管理器仍可注入无数据库的模拟评估器，但这不产生实际资金执行权限。最终确认路径为：
+
+```text
+正式确认 → 原子领取任务 → 绑定账户/收款人/金额的一次性服务端许可
+→ transfer_money → BEGIN IMMEDIATE
+→ 取业务时间 → 全量累计查询 → RiskEngine → PermissionController
+→ 同连接写入最终风险/权限审计
+→ 黄色且具有已确认许可：余额更新及双方账单 → 提交
+→ 红色：只提交阻断审计，不扣款，不产生新可确认任务
+```
+
+业务日归属采用取得写锁后统一采样的执行时间；风险判断及双方账单使用同一时间。不同任务并发确认时，后取得 SQLite 写锁的任务必须看到前一笔已提交账本并重新判断。内存任务锁仅防止同一 action_id 重复领取；累计正确性依靠 SQLite 资金事务，而不是会话锁或内存计数。待确认任务仍仅支持单 worker、重启丢失；账本累计重启后保留。
+
+服务端许可通过进程内 ContextVar 传递，只在已领取正式确认任务后建立，绑定完整参数并只能消费一次；不是客户端字段、不是强验证凭据。直接调用 `transfer_money`、`execute_tool` 或 `execute_saved_action` 而没有该许可不能写资金。原默认执行器仍只读，旧 `/chat` 继续拒绝写入；模型工具 schema 不接收累计金额、业务时间或确认许可。Python 进程内代码与数据库写权限仍属于可信边界，不是对任意本机代码的沙箱。
+
+`AuditLogger.log_event(..., db_connection=conn)` 允许最终风险与权限审计复用资金事务连接，避免写锁内另开连接。原 `tool_execution_started` 表示安全执行器开始复核（`stage: confirmation_gate`），不代表资金已扣除。确认时新增 `stage: confirmation` 的风险和权限事件及真实累计快照；风险升级后的 `tool_executed.execution_result` 为 `not_executed`。资金提交后单独写执行结果审计，失败沿用 `audit_warning`，不会重做交易。写入/提交期间异常保守返回 `execution_unknown`，不能宣称已回滚或未扣款；请核对账单。
+
+`/confirm` 增加 `status: require_verification`，并通过可选的 `decision` 返回本次最新服务端决策；原 action_id/audit_id 关联保留。原黄色任务已消费，不能再次确认。前端收到最新决策后清除待确认按钮，风险面板改为红色，不能继续显示旧黄色授权。其他普通查询、聊天及取消协议不变。规则提示词与可信说明同步采用日累计口径，没有继续优化闲聊。
+
+新增 `tests/test_daily_limit.py`，包含同步纯规则/真实临时 SQLite 事务及模拟模型 API 测试。覆盖阈值、拆分、同账户并发、跨日和写锁等待跨日、取消/失败/回滚、提交后审计/响应失败、超过 100 条账单、账户隔离、重启、一次性许可和审计同连接。资金写入 spy 检查实际调用次数。原余额并发测试改用日累计阈值内的隔离余额场景，继续验证防止超扣；原超额余额测试按更早触发的累计强验证规则调整，并由新增测试单独验证余额不足。
+
+完整回归仍需在本机 PowerShell 使用第 16 节独立 `.cache` 临时目录命令运行；Codex 不为已知 asyncio 初始化阻塞改写业务异步代码。模拟模型/临时账本测试不能视为真实 DeepSeek 或浏览器验收。
+
+本轮新增后端 29 项（同步 27 项、API 2 项）和前端 2 项测试。Codex 已运行同步后端 121/121、前端 13/13、TypeScript/Vite 构建和静态检查；完整后端静态发现为 228 项，尚待本机完整回归。前端凭据组件对强验证阻断单独展示红色提示，只有 completed、工具 ok=true 与有效交易编号同时成立才显示转账凭据。

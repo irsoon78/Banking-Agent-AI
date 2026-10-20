@@ -17,7 +17,7 @@ from deepseek_client import DeepSeekHTTPClient
 from main import app
 from security import AuditLogger, PendingActionManager
 from security.audit import AUDIT_WARNING, AuditError
-from tests.test_banking import DatabaseFixture, completion
+from tests.test_banking import DatabaseFixture, completion, confirmed_test_transfer
 from tools.account import get_balance
 
 REQUIRED = {"timestamp", "account_id", "user_request", "operation", "risk_level",
@@ -77,8 +77,7 @@ class AuditLoggerTests(DatabaseFixture, unittest.TestCase):
         self.assertEqual(get_balance("1001")["balance"], "10000.00")
 
     def test_existing_accounts_and_bills_are_preserved(self):
-        from tools.transfer import transfer_money
-        transfer_money("1001", "1002", "0.01")
+        confirmed_test_transfer("1001", "1002", "0.01")
         with connection() as conn:
             conn.execute("DROP TABLE audit_logs")
         init_db()
@@ -165,7 +164,7 @@ class AuditAPITests(DatabaseFixture, unittest.TestCase):
 
     def test_failed_tool_result_is_logged(self):
         with self.sdk_client([self.transfer_response(recipient="missing")]) as (client, _):
-            pending = client.post("/chat/secure", json={"message": "模拟转账500元"}).json()
+            pending = client.post("/chat/secure", json={"message": "给账户missing转500元"}).json()
             result = client.post("/confirm", json={"action_id": pending["action_id"]}).json()
             self.assertEqual(result["status"], "failed")
             row = next(item for item in AuditLogger().query("1001") if item["event_type"] == "tool_executed")

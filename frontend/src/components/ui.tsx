@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { hasExecutionReceipt } from "../state/demoReducer";
 import type {
   ActionResponse,
   Bill,
@@ -240,6 +241,13 @@ export function ToolResult({
 }
 export function Receipt({ response }: { response: ActionResponse }) {
   const result = response.execution_result;
+  if (response.status === "require_verification")
+    return (
+      <Alert tone="red">
+        <strong>需要强验证，当前转账未执行。</strong>
+        <p>{response.message}</p>
+      </Alert>
+    );
   if (response.status === "cancelled")
     return (
       <Alert tone="neutral">
@@ -261,6 +269,8 @@ export function Receipt({ response }: { response: ActionResponse }) {
         <p>{result.error || response.message}</p>
       </Alert>
     );
+  if (!hasExecutionReceipt(response))
+    return <Alert tone="red">未取得有效的执行凭据，请核对账单与审计。</Alert>;
   return (
     <section className="receipt">
       <div className="row">

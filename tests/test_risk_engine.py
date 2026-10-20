@@ -22,12 +22,12 @@ class RiskEngineTests(unittest.TestCase):
 
     def test_transfer_500_is_yellow(self):
         self.assertEqual(self.engine.evaluate("transfer", 500), {
-            "risk_level": "yellow", "reason": "小额转账需要用户确认",
+            "risk_level": "yellow", "reason": "日累计转账不超过1000元，需要用户确认",
         })
 
     def test_transfer_5000_is_red(self):
         self.assertEqual(self.engine.evaluate("transfer", 5000), {
-            "risk_level": "red", "reason": "大额转账需要强验证",
+            "risk_level": "red", "reason": "日累计转账超过1000元，需要强验证",
         })
 
     def test_threshold_and_smallest_cent(self):

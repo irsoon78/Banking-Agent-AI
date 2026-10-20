@@ -8,7 +8,8 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpe
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.prompt import SYSTEM_PROMPT
-from agent.dialogue import social_or_help, confirmation_message, transfer_intent, text_response, unsupported_request
+from agent.dialogue import DialogueContext, social_or_help, text_response, unsupported_request, confirmation_message, clarification_response, business_request
+from agent.intents import resolve_request, transfer_request_issue
 from tools.account import get_balance
 from tools.bill import get_bills
 from tools.transfer import transfer_money
@@ -45,16 +46,17 @@ def function_schema(name: str, description: str, arguments: type[BaseModel]) -> 
 TOOLS = [
     function_schema("get_balance", "查询当前账户的真实演示余额。", EmptyArgs),
     function_schema("get_bills", "查询当前账户最近的账单，默认查询 10 条。", BillArgs),
-    function_schema("transfer_money", "按用户明确指定的收款账户编号和人民币金额模拟转账。", TransferArgs),
+    function_schema("transfer_money", "提交一笔明确转账请求供服务端安全评估，不代表直接执行。收款账户及金额齐全时，无论金额大小均应提交；风险、待确认或强验证阻断全部由服务端决定。", TransferArgs),
 ]
 ARGUMENT_MODELS = {"get_balance": EmptyArgs, "get_bills": BillArgs, "transfer_money": TransferArgs}
 NO_TOOL_REPLY = "请明确说明要查询余额、查询最近几条账单，或模拟转账到哪个账户及金额。每条请求只支持一笔转账；请提供完整信息。"
 
 
 class AgentError(Exception):
-    def __init__(self, message: str, status_code: int = 502):
+    def __init__(self, message: str, status_code: int = 502, diagnostic_code: str = "MODEL_ERROR"):
         super().__init__(message)
         self.status_code = status_code
+        self.diagnostic_code = diagnostic_code
 
 
 class AgentPause(Exception):
@@ -117,6 +119,18 @@ def make_response(records: list[dict], status: str, notice: str = "") -> dict:
     return {"status": status, "reply": reply or NO_TOOL_REPLY, "tool_results": records, "response_kind": "business_result"}
 
 
+def reply_from_evidence(message: str, model_text: str | None, records: list[dict], *, context: DialogueContext) -> dict:
+    """只接收执行器的本轮记录，不接收模型声称的凭据或历史账本。
+
+    有实际工具记录时只渲染结构化结果；无记录时仅能返回无业务凭据的对话。
+    context 只帮助解释当前限制，不能把模型文本升级成账户事实或授权。
+    """
+    if records:
+        status = "completed" if all(item["result"]["ok"] for item in records) else "failed"
+        return make_response(records, status)
+    return text_response(message, model_text, context=context)
+
+
 class BankingAgent:
     def __init__(self, client: AsyncOpenAI, model: str, tool_executor: Callable = execute_read_only_tool):
         self.client = client
@@ -125,12 +139,20 @@ class BankingAgent:
 
     async def run(self, message: str, account_id: str, *, history: list[dict] | None = None, allow_transfer: bool = True) -> dict:
         history = history or []
+        diagnostics = []
+        # allow_transfer 来自服务端对待确认任务的检查，不采用助手历史或客户端状态。
+        dialogue_context = DialogueContext(transfer_pending=not allow_transfer)
+
+        def finish(response: dict) -> dict:
+            # 只有代码生成的枚举原因，不携带模型原文、参数或新的用户敏感数据。
+            return {**response, "diagnostic_codes": list(dict.fromkeys([*diagnostics, *response.get("diagnostic_codes", [])]))}
+
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             *history,
             {"role": "user", "content": message},
         ]
-        conversation_only = social_or_help(message) or confirmation_message(message) or unsupported_request(message)
+        conversation_only = not business_request(message, history) or social_or_help(message) or confirmation_message(message) or unsupported_request(message)
         records = []
         for _ in range(6):
             try:
@@ -142,48 +164,96 @@ class BankingAgent:
                 )
             except APITimeoutError:
                 if records:
-                    return make_response(records, "partial", "后续模型调用超时；以上为已完成的工具结果。")
-                raise AgentError("模型调用超时，请稍后重试。", 504) from None
+                    diagnostics.append("MODEL_TIMEOUT")
+                    return finish(make_response(records, "partial", "后续模型调用超时；以上为已完成的工具结果。"))
+                raise AgentError("模型调用超时，请稍后重试。", 504, "MODEL_TIMEOUT") from None
             except (APIConnectionError, APIStatusError):
                 if records:
-                    return make_response(records, "partial", "后续模型调用失败；以上为已完成的工具结果。")
+                    diagnostics.append("MODEL_ERROR")
+                    return finish(make_response(records, "partial", "后续模型调用失败；以上为已完成的工具结果。"))
                 raise AgentError("模型服务调用失败，请检查 API Key、模型名称和网络。") from None
             if not completion.choices:
                 if records:
-                    return make_response(records, "partial", "模型返回空响应；以上为已完成的工具结果。")
-                raise AgentError("模型返回空响应。")
-            assistant = completion.choices[0].message
+                    diagnostics.append("MODEL_EMPTY_RESPONSE")
+                    return finish(make_response(records, "partial", "模型返回空响应；以上为已完成的工具结果。"))
+                raise AgentError("模型返回空响应。", diagnostic_code="MODEL_EMPTY_RESPONSE")
+            choice = completion.choices[0]
+            assistant = choice.message
             calls = assistant.tool_calls or []
+            fallback = False
+            if getattr(assistant, "refusal", None) or getattr(assistant, "function_call", None) or choice.finish_reason not in {"stop", "tool_calls"}:
+                diagnostics.append("MODEL_CALL_ERROR")
+                return finish(make_response(records, "partial" if records else "failed", "模型未正常完成工具选择，本轮未启动新的操作。"))
             if not calls:
-                return make_response(records, "completed") if records else text_response(message, assistant.content)
-            # 虽然请求禁用并行调用，仍校验响应，避免一次执行多笔转账。
-            if len(calls) != 1 or calls[0].type != "function":
-                return make_response(records, "partial" if records else "failed", "模型返回不支持的工具调用组合，本轮工具未执行。")
-            call = calls[0]
-            if call.function.name not in ARGUMENT_MODELS:
-                return make_response([*records, {"tool": call.function.name, "result": {"ok": False, "code": "UNKNOWN_TOOL", "error": "模型请求了不支持的工具。"}}], "failed")
-            if conversation_only:
-                return text_response(message, None)
-            if call.function.name == "transfer_money":
-                if not allow_transfer:
-                    return {"status": "needs_input", "reply": "当前已有待确认任务。可以继续聊天和查询，请先用原任务的确认或取消按钮处理，再发起新转账。", "tool_results": records, "response_kind": "clarification"}
-                if not transfer_intent(message, history):
-                    return text_response(message, None)
-            messages.append(assistant.model_dump(exclude_none=True))
+                if records:
+                    return finish(reply_from_evidence(message, assistant.content, records, context=dialogue_context))
+                diagnostics.append("MODEL_NO_TOOL_CALL")
+                if choice.finish_reason != "stop":
+                    diagnostics.append("MODEL_CALL_ERROR")
+                    return finish(make_response([], "failed", "模型工具调用不完整，尚未执行操作。"))
+                if conversation_only:
+                    return finish(reply_from_evidence(message, assistant.content, records, context=dialogue_context))
+                resolution = resolve_request(message, account_id)
+                if resolution is None:
+                    return finish(reply_from_evidence(message, assistant.content, records, context=dialogue_context))
+                diagnostics.append(resolution.code)
+                if resolution.tool is None:
+                    return finish(clarification_response(resolution.code))
+                name, raw_arguments = resolution.tool, json.dumps(resolution.arguments, ensure_ascii=False)
+                fallback = True
+            else:
+                # 模型明确返回错误调用时不能进入无工具兜底，也不能再次调用模型重试。
+                if len(calls) != 1 or calls[0].type != "function":
+                    diagnostics.append("INVALID_TOOL_CALL")
+                    return finish(make_response(records, "partial" if records else "failed", "模型返回不支持的工具调用组合，本轮工具未执行。"))
+                call = calls[0]
+                name, raw_arguments = call.function.name, call.function.arguments
+                if name not in ARGUMENT_MODELS:
+                    diagnostics.append("UNKNOWN_TOOL")
+                    return finish(make_response([*records, {"tool": name, "result": {"ok": False, "code": "UNKNOWN_TOOL", "error": "模型请求了不支持的工具。"}}], "failed"))
+                if conversation_only:
+                    diagnostics.append("INTENT_REJECTED")
+                    return finish(reply_from_evidence(message, None, records, context=dialogue_context))
             try:
-                result = await asyncio.to_thread(self.tool_executor, call.function.name, call.function.arguments, account_id)
+                args = ARGUMENT_MODELS[name].model_validate(json.loads(raw_arguments)).model_dump()
+            except (ValueError, TypeError, ValidationError):
+                # 原有执行器负责返回参数错误和审计；不会生成替代参数、触发兜底。
+                args = None
+                diagnostics.append("TOOL_ARGUMENTS_INVALID")
+            if name == "transfer_money" and args is not None:
+                if not allow_transfer:
+                    diagnostics.append("PENDING_EXISTS")
+                    return finish({**clarification_response("PENDING_EXISTS"), "tool_results": records})
+                issue = transfer_request_issue(message, account_id, args, history)
+                if issue:
+                    diagnostics.append(issue)
+                    return finish({**clarification_response(issue), "tool_results": records})
+            if name in {"get_balance", "get_bills"} and args is not None:
+                requested = resolve_request(message, account_id)
+                if requested and requested.code == "ACCOUNT_MISMATCH":
+                    diagnostics.append("ACCOUNT_MISMATCH")
+                    return finish({**clarification_response("ACCOUNT_MISMATCH"), "tool_results": records})
+            if not fallback:
+                messages.append(assistant.model_dump(exclude_none=True))
+            try:
+                result = await asyncio.to_thread(self.tool_executor, name, raw_arguments, account_id)
             except AgentPause as pause:
+                if pause.response["status"] == "execution_unknown":
+                    diagnostics.append("EXECUTION_UNKNOWN")
                 response = make_response(records, pause.response["status"], pause.response["message"])
-                return {**response, **pause.response}
-            records.append({"tool": call.function.name, "result": result})
+                return finish({**response, **pause.response})
+            records.append({"tool": name, "result": result})
+            # 兜底直接用真实工具结果返回，不把一次操作变成额外模型轮次。
+            if fallback:
+                return finish(make_response(records, "completed" if result["ok"] else "failed"))
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.id,
                 "content": json.dumps(result, ensure_ascii=False),
             })
             if not result["ok"]:
-                return make_response(records, "failed")
+                return finish(make_response(records, "failed"))
             # 转账提交后立即返回交易凭据，不依赖下一次 LLM 调用，也不会重复扣款。
-            if call.function.name == "transfer_money":
-                return make_response(records, "completed")
-        return make_response(records, "partial", "已达到工具调用上限；以上为已完成的工具结果。")
+            if name == "transfer_money":
+                return finish(make_response(records, "completed"))
+        return finish(make_response(records, "partial", "已达到工具调用上限；以上为已完成的工具结果。"))

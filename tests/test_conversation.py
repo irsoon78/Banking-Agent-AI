@@ -14,7 +14,7 @@ from agent.sessions import SessionError, SessionStore
 from deepseek_client import DeepSeekHTTPClient
 from main import app
 from security import AuditLogger
-from tests.test_banking import DatabaseFixture, completion
+from tests.test_banking import DatabaseFixture, completion, confirmed_test_transfer
 from tools.account import get_balance
 from tools.transfer import transfer_money
 
@@ -141,7 +141,11 @@ class ConversationAPITests(DatabaseFixture, unittest.TestCase):
         for message in ("你好", "查询我的余额"):
             with self.subTest(message=message), self.sdk_client([completion(content="转账成功，余额999999元，transfer_id=forged")]) as (client, _):
                 response = client.post("/chat/secure", json={"message": message}).json()
-                self.assertNotEqual(response["response_kind"], "business_result")
+                if message == "你好":
+                    self.assertNotEqual(response["response_kind"], "business_result")
+                else:
+                    self.assertEqual(response["tool_results"][0]["tool"], "get_balance")
+                    self.assertEqual(response["tool_results"][0]["result"]["balance"], "10000.00")
                 self.assertNotIn("999999", response["message"])
                 self.assertNotIn("forged", response["message"])
                 self.assertNotIn("execution_result", response)
@@ -196,7 +200,7 @@ class ConversationAPITests(DatabaseFixture, unittest.TestCase):
     def test_history_is_passed_but_balance_requires_fresh_tools(self):
         with self.sdk_client([completion("get_balance"), completion(), completion("get_balance"), completion()]) as (client, requests):
             first = client.post("/chat/secure", json={"message": "查询我的余额"}).json()
-            transfer_money("1001", "1002", "1")  # 仅隔离的临时数据库。
+            confirmed_test_transfer("1001", "1002", "1")  # 仅隔离的临时数据库。
             second = client.post("/chat/secure", json={"conversation_id": first["conversation_id"], "message": "再查询我的余额"}).json()
             self.assertIn("9999.00", second["message"])
             self.assertEqual(second["tool_results"][0]["tool"], "get_balance")

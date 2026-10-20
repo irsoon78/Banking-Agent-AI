@@ -91,6 +91,11 @@ export type DemoAction =
   | { type: "audit"; logs: AuditLog[]; hasMore: boolean }
   | { type: "auditError"; message: string };
 
+export function hasExecutionReceipt(response: ActionResponse): boolean {
+  return response.status === "completed" && response.execution_result.ok === true &&
+    typeof response.execution_result.transfer_id === "string" && response.execution_result.transfer_id.trim().length > 0;
+}
+
 export function demoReducer(state: DemoState, action: DemoAction): DemoState {
   switch (action.type) {
     case "loading":
@@ -131,9 +136,14 @@ export function demoReducer(state: DemoState, action: DemoAction): DemoState {
         error: null,
       };
     case "action":
+      const previousDecision = state.pendingDecision ?? state.currentDecision;
       return {
         ...state,
-        currentDecision: state.pendingDecision ?? state.currentDecision,
+        currentDecision: previousDecision && action.response.decision
+          ? { ...previousDecision, ...action.response.decision,
+              status: action.response.status === "cancelled" ? previousDecision.status : action.response.status,
+              message: action.response.message, decisions: [action.response.decision] }
+          : previousDecision,
         actionResponse: action.response,
         pendingAction: null,
         pendingDecision: null,
