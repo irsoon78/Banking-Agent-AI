@@ -6,6 +6,7 @@ import type {
   BillsResponse,
   Health,
   SecureResponse,
+  AnalysisResponse,
 } from "./types";
 
 export const banking = {
@@ -16,6 +17,10 @@ export const banking = {
     request<BillsResponse>(
       `/accounts/${encodeURIComponent(account)}/bills?limit=10`,
     ),
+  analysis: (account: string, params: URLSearchParams) =>
+    request<AnalysisResponse>(`/accounts/${encodeURIComponent(account)}/bill-analysis?${params}`),
+  analysisRecords: (account: string, params: URLSearchParams) =>
+    request<AnalysisResponse>(`/accounts/${encodeURIComponent(account)}/analysis-records?${params}`),
   chat: (
     account_id: string,
     message: string,

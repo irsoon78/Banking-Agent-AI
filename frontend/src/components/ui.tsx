@@ -8,6 +8,7 @@ import type {
   ToolData,
 } from "../api/types";
 import { useDemo } from "../state/DemoProvider";
+import { AnalysisView } from "./AnalysisView";
 
 export function Icon({
   name,
@@ -206,9 +207,11 @@ export const statusLabels: Record<string, string> = {
 export function ToolResult({
   tool,
   result,
+  auditId,
 }: {
   tool: string;
   result: ToolData;
+  auditId?: string;
 }) {
   return (
     <div className="tool-result">
@@ -232,6 +235,7 @@ export function ToolResult({
         </p>
       )}
       {result.error && <p className="text-red">{result.error}</p>}
+      <AnalysisView result={result} auditId={auditId} />
       <details>
         <summary>查看工具原始结果</summary>
         <pre>{JSON.stringify(result, null, 2)}</pre>
@@ -336,7 +340,7 @@ export function ResponseContent({
         </span>
         <p className="response-text">{response.message}</p>
         {response.tool_results.map((item, index) => (
-          <ToolResult key={index} {...item} />
+          <ToolResult key={index} {...item} auditId={response.audit_id} />
         ))}
         {response.audit_warning && <Alert>{response.audit_warning}</Alert>}
         <div className="message-links">
@@ -366,7 +370,7 @@ export function ResponseContent({
       )}
       {"tool_results" in response &&
         response.tool_results.map((item, index) => (
-          <ToolResult key={index} {...item} />
+          <ToolResult key={index} {...item} auditId={response.audit_id} />
         ))}
       {"execution_result" in response && <Receipt response={response} />}
       {response.audit_warning && <Alert>{response.audit_warning}</Alert>}

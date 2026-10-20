@@ -1497,6 +1497,29 @@ footer > span:first-child {
   }
 }
 /* Keep identity and environment visible at every breakpoint. */
+.analysis-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 16px; margin-bottom: 24px; }
+.analysis-filters label { display: grid; gap: 6px; font-size: 13px; }
+.analysis-filters input, .analysis-filters select { border: 1px solid var(--line); border-radius: 8px; padding: 9px; background: white; max-width: 100%; }
+.analysis-filters .analysis-checkbox { display: flex; align-items: center; min-height: 42px; }
+.analysis-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 24px 0; }
+.analysis-summary > div { background: #f3f7ff; padding: 18px; border-radius: 12px; }
+.analysis-summary span, .analysis-summary strong { display: block; }
+.analysis-summary strong { font-size: clamp(19px, 3vw, 30px); overflow-wrap: anywhere; }
+.analysis-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; margin-bottom: 24px; }
+.analysis-group { display: grid; grid-template-columns: 1fr auto; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line); background: white; padding: 12px 0; gap: 6px; color: inherit; }
+.analysis-group i { display: block; background: #4381e8; height: 6px; border-radius: 3px; grid-column: 1 / -1; }
+.analysis-group small { color: var(--muted); grid-column: 1 / -1; }
+.analysis-trend { display: flex; height: 165px; gap: 5px; overflow-x: auto; margin-bottom: 28px; }
+.analysis-day { min-width: 27px; flex: 1; display: flex; flex-direction: column; align-items: center; }
+.analysis-day small { font-size: 10px; white-space: nowrap; }
+.analysis-bar-track { height: 125px; width: 100%; display: flex; align-items: end; }
+.analysis-bar-track i { display: block; width: 100%; background: #4381e8; border-radius: 4px 4px 0 0; }
+.analysis-day.uncovered i { background: repeating-linear-gradient(45deg,#e6eaf0,#e6eaf0 4px,#f8fafc 4px,#f8fafc 8px); }
+.analysis-finding, .analysis-comparison, .analysis-records { padding: 16px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 16px; }
+.analysis-finding button { margin: 0 8px 8px 0; }
+.analysis-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 16px; }
+.analysis-view { min-width: 0; }
+@media (max-width: 700px) { .analysis-columns, .analysis-summary { grid-template-columns: 1fr; } .analysis-filters label { width: 100%; } }
 .header-meta .version {
   display: inline;
 }

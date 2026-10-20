@@ -3,6 +3,7 @@ import { HomePage } from "./pages/HomePage";
 import { ChatPage } from "./pages/ChatPage";
 import { RiskPage } from "./pages/RiskPage";
 import { AuditPage } from "./pages/AuditPage";
+import { AnalysisPage } from "./pages/AnalysisPage";
 import { Alert, Icon } from "./components/ui";
 import { useDemo } from "./state/DemoProvider";
 
@@ -23,6 +24,7 @@ export function App() {
         <nav aria-label="主导航">
           <NavLink to="/home">首页</NavLink>
           <NavLink to="/chat">AI 对话</NavLink>
+          <NavLink to="/analysis">账单分析</NavLink>
           <NavLink to="/risk">
             风险确认{state.pendingAction && <span className="nav-dot" />}
           </NavLink>
@@ -51,6 +53,7 @@ export function App() {
         <Routes>
           <Route path="/home" element={<HomePage />} />
           <Route path="/chat" element={<ChatPage />} />
+          <Route path="/analysis" element={<AnalysisPage />} />
           <Route path="/risk" element={<RiskPage />} />
           <Route path="/audit" element={<AuditPage />} />
           <Route path="*" element={<Navigate to="/home" replace />} />

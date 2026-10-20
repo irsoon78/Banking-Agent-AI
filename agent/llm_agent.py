@@ -13,6 +13,8 @@ from agent.intents import resolve_request, transfer_request_issue
 from tools.account import get_balance
 from tools.bill import get_bills
 from tools.transfer import transfer_money
+from agent.analysis_intents import resolve_analysis_request
+from bill_analysis.tools import ANALYSIS_MODELS, execute_analysis_tool, render_analysis
 
 
 class EmptyArgs(BaseModel):
@@ -47,8 +49,14 @@ TOOLS = [
     function_schema("get_balance", "查询当前账户的真实演示余额。", EmptyArgs),
     function_schema("get_bills", "查询当前账户最近的账单，默认查询 10 条。", BillArgs),
     function_schema("transfer_money", "提交一笔明确转账请求供服务端安全评估，不代表直接执行。收款账户及金额齐全时，无论金额大小均应提交；风险、待确认或强验证阻断全部由服务端决定。", TransferArgs),
+    *[function_schema(name, description, ANALYSIS_MODELS[name]) for name, description in (
+        ("analyze_spending", "只读分析当前账户独立模拟消费样本：分类总额、商户排行或规则异常提示。日期由服务端解释，数据不影响余额。"),
+        ("compare_spending", "只读比较相邻月份消费样本；month为较晚月份，through_day指定两月相同前N天，整月用null。覆盖不足不能给出增幅。"),
+        ("list_spending_records", "只读查看消费样本原始记录，分页不影响统计；未过滤分类和商户时传null。"),
+        ("get_spending_record", "按用户提供的记录ID只读追溯当前账户样本原始记录。"),
+    )],
 ]
-ARGUMENT_MODELS = {"get_balance": EmptyArgs, "get_bills": BillArgs, "transfer_money": TransferArgs}
+ARGUMENT_MODELS = {"get_balance": EmptyArgs, "get_bills": BillArgs, "transfer_money": TransferArgs, **ANALYSIS_MODELS}
 NO_TOOL_REPLY = "请明确说明要查询余额、查询最近几条账单，或模拟转账到哪个账户及金额。每条请求只支持一笔转账；请提供完整信息。"
 
 
@@ -81,6 +89,8 @@ def execute_tool(name: str, raw_arguments: str, account_id: str) -> dict:
         return get_balance(account_id)
     if name == "get_bills":
         return get_bills(account_id, **args)
+    if name in ANALYSIS_MODELS:
+        return execute_analysis_tool(name, account_id, args)
     return transfer_money(account_id, **args)
 
 
@@ -96,6 +106,8 @@ def render_result(name: str, result: dict) -> str:
         return result["error"]
     if name == "get_balance":
         return f"账户 {result['account_id']}（{result['owner']}）余额：{result['balance']} 元。"
+    if name in ANALYSIS_MODELS:
+        return render_analysis(result)
     if name == "transfer_money":
         return (
             f"模拟转账成功：从 {result['from_account_id']} 向 {result['to_account_id']} "
@@ -142,6 +154,7 @@ class BankingAgent:
         diagnostics = []
         # allow_transfer 来自服务端对待确认任务的检查，不采用助手历史或客户端状态。
         dialogue_context = DialogueContext(transfer_pending=not allow_transfer)
+        analysis_request = resolve_analysis_request(message, account_id)
 
         def finish(response: dict) -> dict:
             # 只有代码生成的枚举原因，不携带模型原文、参数或新的用户敏感数据。
@@ -193,7 +206,7 @@ class BankingAgent:
                     return finish(make_response([], "failed", "模型工具调用不完整，尚未执行操作。"))
                 if conversation_only:
                     return finish(reply_from_evidence(message, assistant.content, records, context=dialogue_context))
-                resolution = resolve_request(message, account_id)
+                resolution = analysis_request or resolve_request(message, account_id)
                 if resolution is None:
                     return finish(reply_from_evidence(message, assistant.content, records, context=dialogue_context))
                 diagnostics.append(resolution.code)
@@ -220,6 +233,17 @@ class BankingAgent:
                 # 原有执行器负责返回参数错误和审计；不会生成替代参数、触发兜底。
                 args = None
                 diagnostics.append("TOOL_ARGUMENTS_INVALID")
+            if analysis_request:
+                if analysis_request.tool is None:
+                    return finish(clarification_response(analysis_request.code))
+                if name != analysis_request.tool:
+                    return finish(clarification_response("ANALYSIS_REQUEST_MISMATCH"))
+                if args is not None:
+                    # 有效模型调用也不能猜日期；原文或服务端时钟决定最终查询范围。
+                    args = analysis_request.arguments
+                    raw_arguments = json.dumps(args, ensure_ascii=False)
+            elif name in ANALYSIS_MODELS and args is not None:
+                return finish(clarification_response("ANALYSIS_DATE_REQUIRED"))
             if name == "transfer_money" and args is not None:
                 if not allow_transfer:
                     diagnostics.append("PENDING_EXISTS")
@@ -254,6 +278,6 @@ class BankingAgent:
             if not result["ok"]:
                 return finish(make_response(records, "failed"))
             # 转账提交后立即返回交易凭据，不依赖下一次 LLM 调用，也不会重复扣款。
-            if name == "transfer_money":
+            if name == "transfer_money" or name in ANALYSIS_MODELS:
                 return finish(make_response(records, "completed"))
         return finish(make_response(records, "partial", "已达到工具调用上限；以上为已完成的工具结果。"))

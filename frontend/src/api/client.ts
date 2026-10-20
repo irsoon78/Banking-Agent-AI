@@ -6,6 +6,7 @@ export class RequestError extends Error {
     public code: string,
     public httpStatus = 0,
     public uncertain = false,
+    public auditId?: string,
   ) {
     super(message);
   }
@@ -55,6 +56,7 @@ export async function request<T>(path: string, body?: object): Promise<T> {
         !["LLM_NOT_CONFIGURED", "LLM_SERVICE_ERROR", "LLM_TIMEOUT"].includes(
           data.error_code || "",
         ),
+      data.audit_id,
     );
   }
   return data;

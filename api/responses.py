@@ -17,6 +17,8 @@ class ErrorResponse(BaseModel):
     message: str
     # 为旧客户端保留 detail；验证错误不回显输入值。
     detail: str | dict | list | None = None
+    request_id: str | None = None
+    audit_id: str | None = None
 
 
 class SecurityDecision(BaseModel):
@@ -135,9 +137,12 @@ def install_error_handlers(app: FastAPI) -> None:
             code = {403: "FORBIDDEN", 404: "NOT_FOUND", 405: "METHOD_NOT_ALLOWED",
                     422: "INVALID_ARGUMENTS", 503: "SERVICE_UNAVAILABLE"}.get(exc.status_code, "HTTP_ERROR")
             message = exc.detail if isinstance(exc.detail, str) else "请求未能完成。"
-        return JSONResponse(status_code=exc.status_code, headers=exc.headers, content=error_payload(
-            code, message, detail=exc.detail,
-        ))
+        payload = error_payload(code, message, detail=exc.detail)
+        if isinstance(exc, APIError) and isinstance(exc.detail, dict):
+            for key in ("request_id", "audit_id"):
+                if isinstance(exc.detail.get(key), str):
+                    payload[key] = exc.detail[key]
+        return JSONResponse(status_code=exc.status_code, headers=exc.headers, content=payload)
 
     @app.exception_handler(Exception)
     async def unexpected_error(request: Request, exc: Exception):

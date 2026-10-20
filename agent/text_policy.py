@@ -81,7 +81,7 @@ def text_policy_code(value: str | None) -> str:
         if not prefix.endswith(("不", "未", "无法")):
             return "UNSUPPORTED_CAPABILITY_CLAIM"
 
-    financial = bool(re.search(r"余额|账单|账户|账号|帐号|转账|交易|资金|金额|扣款|到账|银行卡|卡片|信用卡|理财|订阅|权限|授权|强验证", text)) or bool(
+    financial = bool(re.search(r"余额|账单|账户|账号|帐号|转账|交易|资金|金额|扣款|到账|消费|支出|花销|开销|银行卡|卡片|信用卡|理财|订阅|权限|授权|强验证", text)) or bool(
         re.search(r"\b(?:balance|bill|account|transfer|payment|transaction|card|subscription|authorization)\b", raw)
     )
     # 无工具文本不提供金额事实。数字风险规则交由可信服务端规则说明，不照抄模型数字。

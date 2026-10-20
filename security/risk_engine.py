@@ -20,6 +20,7 @@ class RiskEngine:
 
     QUERY_OPERATIONS = frozenset({
         "query", "query_balance", "query_bill", "query_bills", "get_balance", "get_bills",
+        "analyze_spending", "compare_spending", "list_spending_records", "get_spending_record",
     })
     TRANSFER_OPERATIONS = frozenset({"transfer", "transfer_money"})
     HIGH_RISK_OPERATIONS = frozenset({

@@ -43,6 +43,8 @@ export interface ApiErrorBody {
   error_code: string;
   message: string;
   detail?: unknown;
+  request_id?: string;
+  audit_id?: string;
 }
 export interface Decision {
   operation: string;
@@ -77,6 +79,10 @@ export interface ToolData {
   code?: string;
   error?: string;
   audit_warning?: string;
+  analysis?: SpendingReport;
+  comparison?: SpendingComparison;
+  spending_records?: SpendingPage;
+  spending_record?: SpendingRecordResult;
 }
 export interface SecureResponse extends Partial<Decision> {
   response_kind:
@@ -134,4 +140,90 @@ export interface AuditResponse {
   logs: AuditLog[];
   limit: number;
   offset: number;
+}
+
+export interface SpendingDataset {
+  dataset_id: string;
+  account_id: string;
+  version: string;
+  source: "synthetic_demo";
+  coverage_start: string;
+  coverage_end_exclusive: string;
+  coverage_note: string;
+}
+export interface SpendingRecord {
+  record_id: string;
+  account_id: string;
+  occurred_at: string;
+  business_date: string;
+  amount: string;
+  amount_cents: string;
+  merchant_id: string;
+  merchant_name: string;
+  category: string;
+  payment_instrument_ref: string | null;
+  record_type: "purchase";
+  status: "posted";
+  currency: "CNY";
+}
+export interface SpendingGroup {
+  category?: string;
+  label?: string;
+  merchant_id?: string;
+  merchant_name?: string;
+  count: number;
+  amount: string;
+  amount_cents: string;
+  share_percent: string | null;
+}
+export interface SpendingReport {
+  account_id: string;
+  dataset: SpendingDataset;
+  time_zone: "Asia/Shanghai";
+  currency: "CNY";
+  period: { start_date: string; end_date_exclusive: string; start_utc: string; end_utc_exclusive: string };
+  coverage: { complete: boolean; code: string; note: string; covered_days: number; requested_days: number };
+  summary: { count: number; amount: string; amount_cents: string; basis: string };
+  categories: SpendingGroup[];
+  merchants: SpendingGroup[];
+  daily_trend: { date: string; covered: boolean; count: number | null; amount: string | null; share_percent: string | null }[];
+  anomalies: { rule_id: string; reason: string; record_ids: string[] }[];
+  anomaly_disclaimer: string;
+}
+export interface SpendingComparison {
+  account_id: string;
+  mode: "full_month" | "same_first_n_days";
+  through_day: number | null;
+  comparable: boolean;
+  reason_code: string;
+  previous: SpendingReport;
+  current: SpendingReport;
+  change_cents: string | null;
+  change_amount: string | null;
+  change_percent: string | null;
+}
+export interface SpendingPage {
+  account_id: string;
+  dataset_id: string;
+  dataset: SpendingDataset;
+  time_zone: string;
+  period: { start_date: string; end_date_exclusive: string };
+  total_count: number;
+  limit: number;
+  offset: number;
+  records: SpendingRecord[];
+}
+export interface SpendingRecordResult {
+  account_id: string;
+  dataset_id: string;
+  dataset: SpendingDataset;
+  time_zone: string;
+  record: SpendingRecord;
+}
+export interface AnalysisResponse extends ToolData {
+  request_id: string;
+  audit_id: string;
+  tool: string;
+  decisions: Decision[];
+  data_status: "available" | "incomplete_coverage" | "no_records";
 }

@@ -4,7 +4,7 @@ import json
 import os
 from contextlib import asynccontextmanager
 from functools import partial
-from typing import Literal
+from typing import Annotated, Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query, Request
@@ -22,6 +22,7 @@ from deepseek_client import DeepSeekHTTPClient
 from security import AuditLogger, PendingActionManager, PermissionController, RiskEngine
 from security.audit import AUDIT_WARNING, AuditError
 from security.daily_limit import assess_operation
+from bill_analysis.tools import ANALYSIS_MODELS, READ_ONLY_TOOLS
 
 load_dotenv(PROJECT_DIR / ".env")
 
@@ -60,7 +61,7 @@ def audited_execute_tool(name: str, raw_arguments: str, account_id: str, audit_l
         result = execute_tool(name, raw_arguments, account_id)  # 仅返回白名单/参数错误，不会执行工具。
         audit_logger.log_event("tool_validation_failed", context, execution_result="not_executed", details={"code": result["code"]})
         return result
-    if valid and (name not in {"get_balance", "get_bills"} or permission["action"] != "allow"):
+    if valid and (name not in READ_ONLY_TOOLS or permission["action"] != "allow"):
         audit_logger.log_event("legacy_write_blocked", context, execution_result="not_executed")
         return {"ok": False, "code": "LEGACY_WRITE_DISABLED", "error": "旧 /chat 仅兼容只读查询。转账请使用 /chat/secure，并遵循确认或强验证策略。"}
     audit_logger.log_event("tool_execution_started", context, execution_result="started")
@@ -293,7 +294,9 @@ def run_audited_confirmation(body: ActionRequest, request: Request, confirmed: b
 def checked_result(result: dict) -> dict:
     if result["ok"]:
         return result
-    status = 404 if result["code"] == "ACCOUNT_NOT_FOUND" else 503
+    status = (404 if result["code"] in {"ACCOUNT_NOT_FOUND", "DATASET_NOT_FOUND", "RECORD_NOT_FOUND"} else
+              422 if result["code"] == "INVALID_ARGUMENTS" else
+              409 if result["code"] == "DATASET_AMBIGUOUS" else 503)
     raise APIError(status, result["code"], result["error"], detail=result)
 
 
@@ -310,14 +313,56 @@ def bills(account_id: str, request: Request, limit: int = Query(default=10, ge=1
 def audited_query(name: str, account_id: str, params: dict, request: Request):
     logger = request.app.state.audit_logger
     try:
-        with logger.request_context(account_id, str(request.url.path), name) as context:
+        with decision_scope() as decisions, logger.request_context(account_id, str(request.url.path), name) as context:
             logger.log_event("request_received", context)
             result = audited_execute_tool(name, json.dumps(params), account_id, logger)
+            if name in ANALYSIS_MODELS:
+                result.update(request_id=context["request_id"], audit_id=context["request_id"], tool=name, decisions=list(decisions))
+                report = result.get("analysis")
+                comparison = result.get("comparison")
+                result["data_status"] = ("failed" if not result["ok"] else "incomplete_coverage" if (report and not report["coverage"]["complete"]) or (comparison and not comparison["comparable"]) else
+                                         "no_records" if report and report["summary"]["count"] == 0 else "available")
             if not logger.log_after_execution("request_returned", context, execution_result="not_applicable"):
                 result["audit_warning"] = AUDIT_WARNING
             return checked_result(result)
     except AuditError as exc:
         raise APIError(503, "AUDIT_UNAVAILABLE", str(exc)) from None
+
+
+class BillAnalysisQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source: Literal["synthetic_demo"] = "synthetic_demo"
+    period: str = Field(default="this_month", min_length=1, max_length=32)
+    mode: Literal["summary", "compare"] = "summary"
+    view: Literal["summary", "merchants", "anomalies"] = "summary"
+    through_day: int | None = Field(default=None, ge=1, le=31)
+
+
+class AnalysisRecordsQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source: Literal["synthetic_demo"] = "synthetic_demo"
+    period: str = Field(default="this_month", min_length=1, max_length=32)
+    limit: int = Field(default=20, ge=1, le=100)
+    offset: int = Field(default=0, ge=0, le=100000)
+    category: Literal["dining", "transport", "shopping", "housing", "other", "uncategorized"] | None = None
+    merchant_id: str | None = Field(default=None, min_length=1, max_length=64)
+    record_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+@app.get("/accounts/{account_id}/bill-analysis")
+def bill_analysis(account_id: str, request: Request, query: Annotated[BillAnalysisQuery, Query()]):
+    if query.mode == "compare":
+        return audited_query("compare_spending", account_id, {"month": query.period, "through_day": query.through_day}, request)
+    if query.through_day is not None:
+        raise APIError(422, "INVALID_ARGUMENTS", "through_day仅用于相邻月份比较。")
+    return audited_query("analyze_spending", account_id, {"period": query.period, "view": query.view}, request)
+
+
+@app.get("/accounts/{account_id}/analysis-records")
+def analysis_records(account_id: str, request: Request, query: Annotated[AnalysisRecordsQuery, Query()]):
+    if query.record_id is not None:
+        return audited_query("get_spending_record", account_id, {"record_id": query.record_id}, request)
+    return audited_query("list_spending_records", account_id, query.model_dump(exclude={"source", "record_id"}), request)
 
 
 @app.get("/audit/{account_id}")

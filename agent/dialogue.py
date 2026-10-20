@@ -5,9 +5,11 @@ import unicodedata
 from dataclasses import dataclass
 
 from agent.text_policy import text_policy_code
+from agent.analysis_intents import analysis_intent
 
 CAPABILITIES = (
-    "我可以帮你查询当前账户余额、查看最近账单，以及发起一笔模拟转账。"
+    "我可以帮你查询当前账户余额、查看最近账单、分析独立模拟消费样本，以及发起一笔模拟转账。"
+    "消费分析支持分类、商户排行、规则提示、相邻月份比较和原始记录追溯；样本不参与余额核算。"
     "转账请提供收款账户编号和金额；小额转账需要在风险卡中确认，大额转账会被强验证阻断。"
     "确认与取消必须使用操作按钮，聊天内容不能代替授权。"
     "目前不支持理财、卡片管理、订阅或代扣管理。"
@@ -61,6 +63,8 @@ def business_request(message: str, history: list[dict] | None = None) -> bool:
         return False
     if re.search(r"(?:为什么|为何).*(?:确认|验证|授权|规则)", text):
         return False
+    if analysis_intent(message):
+        return True
     polite = r"(?:(?:请|麻烦)?(?:帮我|替我)?(?:我(?:想|要|不想))?(?:不要|别|勿)?(?:模拟)?)"
     if re.match(rf"^{polite}(?:再|重新|继续)?(?:查询|查看|查|看|获取|读取).*(?:余额|账单)", text):
         return True
@@ -162,6 +166,8 @@ def clarification_response(code: str) -> dict:
         "INTENT_REJECTED": "请求含有歧义或不是明确的单笔当前转账命令，尚未执行。请直接说明一笔操作及完整参数。",
         "ACCOUNT_MISMATCH": "请求指定的账户与当前服务端账户不一致，不能切换账户办理此操作。尚未执行。",
         "PENDING_EXISTS": "当前已有待确认任务。可以继续聊天和查询，请先用原任务的确认或取消按钮处理，再发起新转账。",
+        "ANALYSIS_DATE_REQUIRED": "请明确消费分析的年月或日期范围。支持本月、上月、最近30天；比较请指定两个相邻月份，例如2026年9月和10月前20天。没有工具结果时不能生成消费报告。",
+        "ANALYSIS_REQUEST_MISMATCH": "模型选择的工具与本次分析请求不一致，未执行。请明确分析期间或原始消费记录ID。",
     }
     return {"status": "needs_input", "reply": replies[code], "tool_results": [], "response_kind": "clarification"}
 
