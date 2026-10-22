@@ -9,6 +9,8 @@ import type {
 } from "../api/types";
 import { useDemo } from "../state/DemoProvider";
 import { AnalysisView } from "./AnalysisView";
+import { CardDataView, CardOperationView } from "./CardView";
+import { hasCardReceipt } from "../state/cardFlow";
 
 export function Icon({
   name,
@@ -236,6 +238,7 @@ export function ToolResult({
       )}
       {result.error && <p className="text-red">{result.error}</p>}
       <AnalysisView result={result} auditId={auditId} />
+      <CardDataView result={result} />
       <details>
         <summary>查看工具原始结果</summary>
         <pre>{JSON.stringify(result, null, 2)}</pre>
@@ -248,7 +251,8 @@ export function Receipt({ response }: { response: ActionResponse }) {
   if (response.status === "require_verification")
     return (
       <Alert tone="red">
-        <strong>需要强验证，当前转账未执行。</strong>
+        <strong>需要强验证，当前操作未执行。</strong>
+        <p><code>require_verification · verification_required · not_executed</code></p>
         <p>{response.message}</p>
       </Alert>
     );
@@ -263,7 +267,7 @@ export function Receipt({ response }: { response: ActionResponse }) {
     return (
       <Alert tone="red">
         <strong>执行结果未知，禁止自动重试。</strong>
-        <p>请先核对账单与审计记录。</p>
+        <p>请按原action_id查询卡片操作凭据，或核对转账账单与审计记录；未查到结果也不能自动重试。</p>
       </Alert>
     );
   if (response.status === "failed")
@@ -271,8 +275,12 @@ export function Receipt({ response }: { response: ActionResponse }) {
       <Alert tone="red">
         <strong>业务执行失败</strong>
         <p>{result.error || response.message}</p>
+        <code>{response.error_code || result.code}</code>
+        <p>请重新查询实际状态和审计，核对原因后再明确发起新请求；页面不会自动重试。</p>
       </Alert>
     );
+  if (result.card_operation || response.action === "temporarily_freeze_card" || response.action === "remove_temporary_freeze")
+    return hasCardReceipt(response) && result.card_operation ? <CardOperationView operation={result.card_operation} /> : <Alert tone="red">未取得匹配的卡片操作凭据，请核对服务端。</Alert>;
   if (!hasExecutionReceipt(response))
     return <Alert tone="red">未取得有效的执行凭据，请核对账单与审计。</Alert>;
   return (
@@ -357,6 +365,7 @@ export function ResponseContent({
         {statusLabels[response.status] || response.status}
       </span>
       <p className="response-text">{response.message}</p>
+      {response.status === "require_verification" && <Alert tone="red">强验证阻断 · 当前Demo不能放行。<br /><code>red · require_verification · verification_required · not_executed</code></Alert>}
       {response.status === "partial" && (
         <Alert>部分完成：以下仅展示已获得的实际工具结果。</Alert>
       )}

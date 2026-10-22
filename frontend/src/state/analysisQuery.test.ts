@@ -41,7 +41,7 @@ test("switching analysis filters prevents old result publication", async () => {
   assert.deepEqual(published, ["October"]);
 });
 test("analysis chat result retains pending transfer and cannot count as a receipt", () => {
-  const pending = { action_id: "pending", account_id: "1001", action: "transfer_money", params: { to_account_id: "1002", amount: "500" }, risk_level: "yellow" as const, created_at: "2026-10-20T00:00:00Z" };
+  const pending = { action_id: "pending", account_id: "1001", action: "transfer_money" as const, params: { to_account_id: "1002", amount: "500" }, risk_level: "yellow" as const, created_at: "2026-10-20T00:00:00Z" };
   const response: SecureResponse = { response_kind: "business_result", conversation_id: "conversation", status: "completed", message: "analysis", reply: "analysis", tool_results: [{ tool: "analyze_spending", result: { ok: true } }], request_id: "read", audit_id: "read", decisions: [{ operation: "analyze_spending", risk_level: "green", risk_reason: "read", permission_action: "allow", require_confirmation: false, require_verification: false }] };
   const state = demoReducer({ ...initialState, pendingAction: pending }, { type: "chat", response });
   assert.deepEqual(state.pendingAction, pending);

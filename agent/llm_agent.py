@@ -15,6 +15,8 @@ from tools.bill import get_bills
 from tools.transfer import transfer_money
 from agent.analysis_intents import resolve_analysis_request
 from bill_analysis.tools import ANALYSIS_MODELS, execute_analysis_tool, render_analysis
+from card_management.tools import CARD_MODELS, CARD_READ_MODELS, CARD_WRITE_MODELS, execute_card_read, render_card
+from agent.card_intents import CardResolution, resolve_card_request
 
 
 class EmptyArgs(BaseModel):
@@ -55,8 +57,9 @@ TOOLS = [
         ("list_spending_records", "只读查看消费样本原始记录，分页不影响统计；未过滤分类和商户时传null。"),
         ("get_spending_record", "按用户提供的记录ID只读追溯当前账户样本原始记录。"),
     )],
+    *[function_schema(name, "模拟银行卡只读查询。" if name in CARD_READ_MODELS else "提交明确卡片请求供服务端评估；临时操作须按钮确认，挂失/解挂强验证阻断，绝不直接执行。", model) for name, model in CARD_MODELS.items()],
 ]
-ARGUMENT_MODELS = {"get_balance": EmptyArgs, "get_bills": BillArgs, "transfer_money": TransferArgs, **ANALYSIS_MODELS}
+ARGUMENT_MODELS = {"get_balance": EmptyArgs, "get_bills": BillArgs, "transfer_money": TransferArgs, **ANALYSIS_MODELS, **CARD_MODELS}
 NO_TOOL_REPLY = "请明确说明要查询余额、查询最近几条账单，或模拟转账到哪个账户及金额。每条请求只支持一笔转账；请提供完整信息。"
 
 
@@ -91,11 +94,15 @@ def execute_tool(name: str, raw_arguments: str, account_id: str) -> dict:
         return get_bills(account_id, **args)
     if name in ANALYSIS_MODELS:
         return execute_analysis_tool(name, account_id, args)
+    if name in CARD_READ_MODELS:
+        return execute_card_read(name, account_id, args)
+    if name in CARD_WRITE_MODELS:
+        return {"ok": False, "code": "SECURE_ENTRYPOINT_REQUIRED", "error": "卡片写操作必须经过安全入口、权限及专用确认许可。"}
     return transfer_money(account_id, **args)
 
 
 def execute_read_only_tool(name: str, raw_arguments: str, account_id: str) -> dict:
-    if name == "transfer_money":
+    if name == "transfer_money" or name in CARD_WRITE_MODELS:
         return {"ok": False, "code": "SECURE_ENTRYPOINT_REQUIRED", "error": "转账必须通过安全入口及用户确认，不能直接执行。"}
     return execute_tool(name, raw_arguments, account_id)
 
@@ -108,6 +115,8 @@ def render_result(name: str, result: dict) -> str:
         return f"账户 {result['account_id']}（{result['owner']}）余额：{result['balance']} 元。"
     if name in ANALYSIS_MODELS:
         return render_analysis(result)
+    if name in CARD_MODELS:
+        return render_card(result)
     if name == "transfer_money":
         return (
             f"模拟转账成功：从 {result['from_account_id']} 向 {result['to_account_id']} "
@@ -155,17 +164,38 @@ class BankingAgent:
         # allow_transfer 来自服务端对待确认任务的检查，不采用助手历史或客户端状态。
         dialogue_context = DialogueContext(transfer_pending=not allow_transfer)
         analysis_request = resolve_analysis_request(message, account_id)
+        card_request = resolve_card_request(message, account_id)
 
         def finish(response: dict) -> dict:
             # 只有代码生成的枚举原因，不携带模型原文、参数或新的用户敏感数据。
             return {**response, "diagnostic_codes": list(dict.fromkeys([*diagnostics, *response.get("diagnostic_codes", [])]))}
 
+        target_context = ""
+        if card_request and card_request.tool in CARD_WRITE_MODELS and card_request.code == "CARD_NAMED_TARGET":
+            # 不扩展写工具权限/参数：只读定位后仍用原 card_id 契约，模型须与此结果一致。
+            from card_management.service import CardService
+            from card_management.storage import CardError
+            from database.db import database_path
+            try:
+                target = await asyncio.to_thread(CardService(database_path(), account_id=account_id).resolve_card_target, **card_request.arguments)
+            except CardError as exc:
+                diagnostics.append(exc.code)
+                if exc.code in {"CARD_TARGET_NOT_FOUND", "CARD_TARGET_AMBIGUOUS"}:
+                    return finish(clarification_response(exc.code))
+                return finish(make_response([], "failed", str(exc)))
+            card_request = CardResolution(card_request.tool, {"card_id": target["card"]["card_id"]}, "CARD_TARGET_RESOLVED")
+            diagnostics.append(card_request.code)
+            # 仅注入已校验的内部ID与枚举工具名，不把卡名等数据提升为系统指令。
+            target_context = (
+                f"\n服务端唯一匹配了本轮用户明确提供的完整卡名和尾号：card_id={card_request.arguments['card_id']}。"
+                f"对应请求工具为{card_request.tool}；使用此ID提交安全评估。匹配不代表认证、授权或执行成功，不得填写版本或风险等级。")
+
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": SYSTEM_PROMPT + target_context},
             *history,
             {"role": "user", "content": message},
         ]
-        conversation_only = not business_request(message, history) or social_or_help(message) or confirmation_message(message) or unsupported_request(message)
+        conversation_only = (not business_request(message, history) or social_or_help(message) or confirmation_message(message) or unsupported_request(message)) and card_request is None
         records = []
         for _ in range(6):
             try:
@@ -204,9 +234,12 @@ class BankingAgent:
                 if choice.finish_reason != "stop":
                     diagnostics.append("MODEL_CALL_ERROR")
                     return finish(make_response([], "failed", "模型工具调用不完整，尚未执行操作。"))
+                if card_request and (not isinstance(assistant.content, str) or not assistant.content.strip()):
+                    diagnostics.append("MODEL_EMPTY_TEXT")
+                    return finish(make_response([], "failed", "模型未返回可用内容，尚未启动卡片操作。"))
                 if conversation_only:
                     return finish(reply_from_evidence(message, assistant.content, records, context=dialogue_context))
-                resolution = analysis_request or resolve_request(message, account_id)
+                resolution = card_request or analysis_request or resolve_request(message, account_id)
                 if resolution is None:
                     return finish(reply_from_evidence(message, assistant.content, records, context=dialogue_context))
                 diagnostics.append(resolution.code)
@@ -233,7 +266,20 @@ class BankingAgent:
                 # 原有执行器负责返回参数错误和审计；不会生成替代参数、触发兜底。
                 args = None
                 diagnostics.append("TOOL_ARGUMENTS_INVALID")
-            if analysis_request:
+            if card_request:
+                if card_request.tool is None:
+                    diagnostics.append(card_request.code)
+                    return finish(clarification_response(card_request.code))
+                if name != card_request.tool or (args is not None and args != card_request.arguments):
+                    diagnostics.append("CARD_REQUEST_MISMATCH")
+                    return finish(clarification_response("CARD_REQUEST_MISMATCH"))
+            elif name in CARD_MODELS and args is not None:
+                diagnostics.append("CARD_INTENT_REQUIRED")
+                return finish(clarification_response("CARD_INTENT_REQUIRED"))
+            if name in CARD_WRITE_MODELS and not allow_transfer:
+                diagnostics.append("PENDING_EXISTS")
+                return finish(clarification_response("PENDING_EXISTS"))
+            if analysis_request and not card_request:
                 if analysis_request.tool is None:
                     return finish(clarification_response(analysis_request.code))
                 if name != analysis_request.tool:
@@ -278,6 +324,6 @@ class BankingAgent:
             if not result["ok"]:
                 return finish(make_response(records, "failed"))
             # 转账提交后立即返回交易凭据，不依赖下一次 LLM 调用，也不会重复扣款。
-            if name == "transfer_money" or name in ANALYSIS_MODELS:
+            if name == "transfer_money" or name in ANALYSIS_MODELS or name in CARD_MODELS:
                 return finish(make_response(records, "completed"))
         return finish(make_response(records, "partial", "已达到工具调用上限；以上为已完成的工具结果。"))

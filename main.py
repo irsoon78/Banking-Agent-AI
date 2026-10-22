@@ -23,11 +23,17 @@ from security import AuditLogger, PendingActionManager, PermissionController, Ri
 from security.audit import AUDIT_WARNING, AuditError
 from security.daily_limit import assess_operation
 from bill_analysis.tools import ANALYSIS_MODELS, READ_ONLY_TOOLS
+from card_management.tools import CARD_MODELS, CARD_READ_MODELS, CARD_TEMP_OPERATIONS, execute_confirmed_card
+from card_management.authorization import card_request_scope
+
+READ_ONLY_TOOLS = READ_ONLY_TOOLS | frozenset(CARD_READ_MODELS)
 
 load_dotenv(PROJECT_DIR / ".env")
 
 
 def execute_saved_action(account_id: str, action: str, params: dict) -> dict:
+    if action in CARD_TEMP_OPERATIONS:
+        return execute_confirmed_card(account_id, action, params)
     name = "transfer_money" if action == "transfer" else action
     return execute_tool(name, json.dumps(params, ensure_ascii=False), account_id)
 
@@ -87,7 +93,8 @@ def secure_execute_tool(name: str, raw_arguments: str, account_id: str, manager:
     except (ValueError, TypeError, ValidationError):
         return audited_execute_tool(name, raw_arguments, account_id, audit_logger) if audit_logger else execute_tool(name, raw_arguments, account_id)
     response = manager.prepare_action(account_id, name, args)
-    record_decision(response)
+    if "risk_level" in response:
+        record_decision(response)
     if response["status"] in {"pending", "require_verification", "execution_unknown"}:
         raise AgentPause(response)
     result = response["result"]
@@ -181,6 +188,7 @@ class ActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     account_id: str = Field(default="1001", min_length=1, max_length=64)
     action_id: str = Field(min_length=1, max_length=64)
+    conversation_id: str | None = Field(default=None, min_length=32, max_length=32, pattern=r"^[0-9a-f]{32}$")
 
     @field_validator("account_id", "action_id")
     @classmethod
@@ -237,7 +245,8 @@ async def run_audited_chat(body: ChatRequest, request: Request, secure: bool):
                         pending = request.app.state.pending_actions.get_pending_action(body.account_id, session.pending_action_id) if session.pending_action_id else None
                         if pending is None:
                             session.pending_action_id = None
-                        response = await agent.run(body.message, body.account_id, history=history, allow_transfer=pending is None)
+                        with card_request_scope(session.conversation_id):
+                            response = await agent.run(body.message, body.account_id, history=history, allow_transfer=pending is None)
                         response["conversation_id"] = session.conversation_id
                         if response.get("pending_action"):
                             session.pending_action_id = response["pending_action"]["action_id"]
@@ -264,7 +273,7 @@ def action_response(response: dict) -> dict:
     if response["status"] == "not_found":
         raise APIError(404, "ACTION_NOT_FOUND", response["message"], detail=response)
     if "result" in response:
-        name = "transfer_money" if response["action"] == "transfer" else response["action"]
+        name = "transfer_money" if response.get("action") == "transfer" else response.get("action", "")
         response["reply"] = render_result(name, response["result"])
     return action_response_fields(response)
 
@@ -284,7 +293,20 @@ def run_audited_confirmation(body: ActionRequest, request: Request, confirmed: b
     try:
         with logger.request_context(body.account_id, body.model_dump_json(), "confirm_action" if confirmed else "cancel_action") as context:
             logger.log_event("request_received", context, action_id=body.action_id)
-            response = request.app.state.pending_actions.confirm_action(body.account_id, body.action_id, confirmed)
+            manager = request.app.state.pending_actions
+            pending = manager.get_pending_action(body.account_id, body.action_id)
+            if pending and pending["action"] in CARD_TEMP_OPERATIONS:
+                if not body.conversation_id or body.conversation_id != pending.get("conversation_id"):
+                    response = manager.confirm_action(body.account_id, body.action_id, confirmed, conversation_id=None)
+                else:
+                    try:
+                        with request.app.state.sessions.checkout(body.account_id, body.conversation_id):
+                            response = manager.confirm_action(body.account_id, body.action_id, confirmed, conversation_id=body.conversation_id)
+                    except SessionError as exc:
+                        logger.log_event("confirmation_rejected", context, action_id=body.action_id, confirmation_status="session_unavailable")
+                        raise APIError(exc.status_code, exc.code, str(exc)) from None
+            else:
+                response = manager.confirm_action(body.account_id, body.action_id, confirmed)
             finish_audit(logger, context, response)
             return action_response(response)
     except AuditError as exc:
@@ -294,7 +316,7 @@ def run_audited_confirmation(body: ActionRequest, request: Request, confirmed: b
 def checked_result(result: dict) -> dict:
     if result["ok"]:
         return result
-    status = (404 if result["code"] in {"ACCOUNT_NOT_FOUND", "DATASET_NOT_FOUND", "RECORD_NOT_FOUND"} else
+    status = (404 if result["code"] in {"ACCOUNT_NOT_FOUND", "DATASET_NOT_FOUND", "RECORD_NOT_FOUND", "CARD_NOT_FOUND", "OPERATION_NOT_FOUND"} else
               422 if result["code"] == "INVALID_ARGUMENTS" else
               409 if result["code"] == "DATASET_AMBIGUOUS" else 503)
     raise APIError(status, result["code"], result["error"], detail=result)
@@ -310,12 +332,34 @@ def bills(account_id: str, request: Request, limit: int = Query(default=10, ge=1
     return audited_query("get_bills", account_id, {"limit": limit}, request)
 
 
+@app.get("/accounts/{account_id}/cards")
+def cards(account_id: str, request: Request):
+    return audited_query("list_cards", account_id, {}, request)
+
+
+@app.get("/accounts/{account_id}/cards/{card_id}")
+def card_detail(account_id: str, card_id: str, request: Request):
+    return audited_query("get_card", account_id, {"card_id": card_id}, request)
+
+
+@app.get("/accounts/{account_id}/analysis-records/{record_id}/card")
+def spending_record_card(account_id: str, record_id: str, request: Request):
+    return audited_query("get_card_for_spending_record", account_id, {"record_id": record_id}, request)
+
+
+@app.get("/accounts/{account_id}/card-operations/{action_id}")
+def card_operation(account_id: str, action_id: str, request: Request):
+    return audited_query("get_card_operation", account_id, {"action_id": action_id}, request)
+
+
 def audited_query(name: str, account_id: str, params: dict, request: Request):
     logger = request.app.state.audit_logger
     try:
         with decision_scope() as decisions, logger.request_context(account_id, str(request.url.path), name) as context:
             logger.log_event("request_received", context)
             result = audited_execute_tool(name, json.dumps(params), account_id, logger)
+            if name in CARD_MODELS:
+                result.update(request_id=context["request_id"], audit_id=context["request_id"], tool=name, decisions=list(decisions))
             if name in ANALYSIS_MODELS:
                 result.update(request_id=context["request_id"], audit_id=context["request_id"], tool=name, decisions=list(decisions))
                 report = result.get("analysis")

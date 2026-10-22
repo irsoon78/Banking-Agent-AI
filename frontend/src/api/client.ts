@@ -29,7 +29,7 @@ export async function request<T>(path: string, body?: object): Promise<T> {
     });
   } catch {
     throw new RequestError(
-      "无法取得后端响应，请检查服务连接。如涉及转账，请先核对账单和审计。",
+      "无法取得后端响应，请检查服务连接。如涉及转账或卡片操作，请先核对账单、卡片操作凭据和审计。",
       "NETWORK_ERROR",
       0,
       !!body,
@@ -40,7 +40,7 @@ export async function request<T>(path: string, body?: object): Promise<T> {
     data = await response.json();
   } catch {
     throw new RequestError(
-      "后端未返回有效 JSON，请检查服务。如涉及转账，请先核对账单和审计。",
+      "后端未返回有效 JSON，请检查服务。如涉及转账或卡片操作，请先核对账单、卡片操作凭据和审计。",
       "INVALID_RESPONSE",
       response.status,
       !!body,

@@ -4,11 +4,12 @@ import { ChatPage } from "./pages/ChatPage";
 import { RiskPage } from "./pages/RiskPage";
 import { AuditPage } from "./pages/AuditPage";
 import { AnalysisPage } from "./pages/AnalysisPage";
+import { CardsPage } from "./pages/CardsPage";
 import { Alert, Icon } from "./components/ui";
 import { useDemo } from "./state/DemoProvider";
 
 export function App() {
-  const { state } = useDemo();
+  const { state, switchAccount } = useDemo();
   return (
     <>
       <header className="topbar">
@@ -25,6 +26,7 @@ export function App() {
           <NavLink to="/home">首页</NavLink>
           <NavLink to="/chat">AI 对话</NavLink>
           <NavLink to="/analysis">账单分析</NavLink>
+          <NavLink to="/cards">银行卡管理</NavLink>
           <NavLink to="/risk">
             风险确认{state.pendingAction && <span className="nav-dot" />}
           </NavLink>
@@ -33,7 +35,7 @@ export function App() {
         <div className="header-meta">
           <span className="version">V0.3.0</span>
           <span className="simulation">模拟银行操作</span>
-          <span className="account-chip">账户 {state.account_id}</span>
+          <label className="account-chip">模拟账户 <select aria-label="切换模拟账户" value={state.account_id} disabled={!!state.pendingAction || state.uncertain || state.loading.chat || state.loading.action} onChange={e => switchAccount(e.target.value)}><option value="1001">1001</option><option value="1002">1002</option></select></label>
         </div>
       </header>
       <div className="workspace-label">
@@ -50,10 +52,11 @@ export function App() {
             {state.overviewError} 账户卡片可能显示上次读取值，请核对后端。
           </Alert>
         )}
-        <Routes>
+        <Routes key={state.account_id}>
           <Route path="/home" element={<HomePage />} />
           <Route path="/chat" element={<ChatPage />} />
           <Route path="/analysis" element={<AnalysisPage />} />
+          <Route path="/cards" element={<CardsPage />} />
           <Route path="/risk" element={<RiskPage />} />
           <Route path="/audit" element={<AuditPage />} />
           <Route path="*" element={<Navigate to="/home" replace />} />

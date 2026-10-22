@@ -127,8 +127,14 @@ class ConversationAPITests(DatabaseFixture, unittest.TestCase):
         for message in ("帮我冻结银行卡", "取消订阅", "帮我申购理财", "帮我挂失", "冻结我的卡"):
             with self.subTest(message=message), self.sdk_client([completion(content="操作已完成")]) as (client, _):
                 response = client.post("/chat/secure", json={"message": message}).json()
-                self.assertEqual(response["response_kind"], "unsupported")
-                self.assertIn("尚不支持", response["message"])
+                if message in ("帮我冻结银行卡", "帮我挂失", "冻结我的卡"):
+                    # 卡片功能已实现，但这些原始用例没有唯一目标/临时意图，仍须澄清且不执行。
+                    self.assertEqual(response["response_kind"], "clarification")
+                    self.assertEqual(response["status"], "needs_input")
+                    self.assertNotIn("action_id", response)
+                else:
+                    self.assertEqual(response["response_kind"], "unsupported")
+                    self.assertIn("尚不支持", response["message"])
                 self.assertEqual(response["tool_results"], [])
 
     def test_general_conversation_can_return_nonfinancial_model_text(self):

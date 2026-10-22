@@ -1519,6 +1519,19 @@ footer > span:first-child {
 .analysis-finding button { margin: 0 8px 8px 0; }
 .analysis-pagination { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-top: 16px; }
 .analysis-view { min-width: 0; }
+.cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 18px; margin: 20px 0; }
+.card-summary { min-width: 0; padding: 12px 0; }
+.card-summary h3 { margin: 0; }
+.card-summary dl, .card-receipt dl { display: grid; gap: 9px; }
+.card-summary dl div, .card-receipt dl div { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+.card-summary dd, .card-receipt dd { margin: 0; overflow-wrap: anywhere; }
+.card-summary dt, .card-receipt dt { color: var(--muted); }
+.card-selected { outline: 2px solid #4381e8; }
+.cards-risk { max-width: 900px; margin: 24px 0; }
+.spending-card-link { margin-top: 10px; min-width: 180px; }
+.spending-card-link .text-link { display: block; margin: 10px 0; }
+.card-results { margin-top: 12px; }
+.account-chip select { background: transparent; color: inherit; border: 0; font: inherit; }
 @media (max-width: 700px) { .analysis-columns, .analysis-summary { grid-template-columns: 1fr; } .analysis-filters label { width: 100%; } }
 .header-meta .version {
   display: inline;

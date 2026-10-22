@@ -16,6 +16,7 @@ import { AuditTimeline } from "../components/AuditTimeline";
 const examples = [
   "你好",
   "你能做什么？",
+  "查询我的银行卡",
   "查询我的余额",
   "给账户1002转500元",
   "给账户1002转5000元",
@@ -146,12 +147,12 @@ export function ChatPage() {
           {state.pendingAction && (
             <div className="composer-notice">
               原任务仍在等待 <Link to="/risk">确认或取消</Link>
-              。可以继续聊天、查询；新转账不会替换这笔任务。
+              。可以继续聊天、查询；新转账或卡片操作不会替换这笔任务。
             </div>
           )}
           {state.uncertain && (
             <Alert tone="red">
-              执行结果待核对，已暂停发送。请查看首页账单和审计。
+              执行结果待核对，已暂停发送。卡片操作请使用风险面板的只读结果查询；转账请核对账单与审计。
             </Alert>
           )}
           <form className="composer" onSubmit={submit}>

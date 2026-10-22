@@ -21,7 +21,10 @@ class RiskEngine:
     QUERY_OPERATIONS = frozenset({
         "query", "query_balance", "query_bill", "query_bills", "get_balance", "get_bills",
         "analyze_spending", "compare_spending", "list_spending_records", "get_spending_record",
+        "list_cards", "get_card", "get_card_for_spending_record", "get_card_operation",
     })
+    CARD_TEMP_OPERATIONS = frozenset({"temporarily_freeze_card", "remove_temporary_freeze"})
+    CARD_RED_OPERATIONS = frozenset({"report_card_loss", "cancel_card_loss_report"})
     TRANSFER_OPERATIONS = frozenset({"transfer", "transfer_money"})
     HIGH_RISK_OPERATIONS = frozenset({
         "high_risk", "investment", "card_management", "subscription_management",
@@ -33,6 +36,10 @@ class RiskEngine:
         if not isinstance(operation, str) or not operation.strip():
             return {"risk_level": "red", "reason": "操作类型无效，需要强验证"}
         operation = operation.strip().lower()
+        if operation in self.CARD_RED_OPERATIONS:
+            return {"risk_level": "red", "reason": "正式挂失或解挂需要强验证，当前没有放行能力"}
+        if operation in self.CARD_TEMP_OPERATIONS:
+            return {"risk_level": "yellow", "reason": "模拟银行卡临时状态操作需要用户明确确认"}
         if operation in self.HIGH_RISK_OPERATIONS:
             return {"risk_level": "red", "reason": "高风险操作需要强验证"}
         if operation in self.QUERY_OPERATIONS:

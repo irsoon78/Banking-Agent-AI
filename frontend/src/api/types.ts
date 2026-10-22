@@ -54,15 +54,62 @@ export interface Decision {
   require_confirmation: boolean;
   require_verification: boolean;
 }
-export interface PendingAction {
+interface PendingBase {
   action_id: string;
   account_id: string;
-  action: string;
-  params: { to_account_id: string; amount: string };
   risk_level: "yellow";
   created_at: string;
 }
+export interface TransferPendingAction extends PendingBase {
+  action: "transfer_money" | "transfer";
+  params: { to_account_id: string; amount: string };
+  conversation_id?: string;
+}
+export interface CardPendingAction extends PendingBase {
+  action: "temporarily_freeze_card" | "remove_temporary_freeze";
+  params: { card_id: string; expected_version: number };
+  conversation_id: string;
+}
+export type PendingAction = TransferPendingAction | CardPendingAction;
+export interface Card {
+  card_id: string;
+  account_id: string;
+  display_name: string;
+  last_four: string;
+  temporary_frozen: boolean;
+  loss_status: "normal" | "reported";
+  version: number;
+  created_at: string;
+  updated_at: string;
+  source: "synthetic_card_demo_v1";
+  effective_status: "active" | "temporarily_frozen" | "reported_lost";
+  usable_in_demo: boolean;
+}
+export interface CardOperation {
+  ok: boolean;
+  operation_id: string;
+  action_id: string;
+  account_id: string;
+  card_id: string;
+  operation: "temporary_freeze" | "temporary_unfreeze";
+  before: { temporary_frozen: boolean; loss_status: "normal" | "reported"; version: number };
+  after: { temporary_frozen: boolean; loss_status: "normal" | "reported"; version: number };
+  result_status: "completed";
+  executed_at: string;
+  source: "synthetic_card_demo_v1";
+  request_id?: string;
+  audit_id?: string;
+}
 export interface ToolData {
+  cards?: Card[];
+  card?: Card | null;
+  card_operation?: CardOperation;
+  linked?: boolean;
+  reason_code?: string;
+  record_id?: string;
+  dataset_id?: string;
+  payment_instrument_ref?: string | null;
+  read_at?: string;
   ok?: boolean;
   simulated?: boolean;
   account_id?: string;
@@ -83,6 +130,13 @@ export interface ToolData {
   comparison?: SpendingComparison;
   spending_records?: SpendingPage;
   spending_record?: SpendingRecordResult;
+}
+export interface CardResponse extends ToolData {
+  ok: boolean;
+  request_id: string;
+  audit_id: string;
+  decisions: Decision[];
+  tool: string;
 }
 export interface SecureResponse extends Partial<Decision> {
   response_kind:

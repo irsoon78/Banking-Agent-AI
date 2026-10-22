@@ -4,10 +4,11 @@ import { banking } from "../api/banking";
 import { RequestError } from "../api/client";
 import type { AnalysisResponse, SpendingRecord, ToolData } from "../api/types";
 import { barPercent, displayAmount, recordsQuery, SAMPLE_NOTICE } from "../state/analysisQuery";
+import { SpendingCardLink } from "./SpendingCardLink";
 
 function RecordsTable({ rows }: { rows: SpendingRecord[] }) {
   return <div className="table-scroll"><table><thead><tr><th>北京时间 / 记录ID</th><th>商户 / 分类</th><th>金额（元）</th><th>支付工具引用</th></tr></thead>
-    <tbody>{rows.map(r => <tr key={r.record_id}><td>{r.business_date}<small>{new Date(r.occurred_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</small><code>{r.record_id}</code></td><td>{r.merchant_name}<small>{r.category}</small></td><td>{displayAmount(r.amount)}</td><td><code>{r.payment_instrument_ref || "—"}</code></td></tr>)}</tbody></table></div>;
+    <tbody>{rows.map(r => <tr key={r.record_id}><td>{r.business_date}<small>{new Date(r.occurred_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</small><code>{r.record_id}</code></td><td>{r.merchant_name}<small>{r.category}</small></td><td>{displayAmount(r.amount)}</td><td><code>{r.payment_instrument_ref || "—"}</code><SpendingCardLink account={r.account_id} recordId={r.record_id} /></td></tr>)}</tbody></table></div>;
 }
 
 export function RecordsResult({ data, offset, loading, onPage }: {
