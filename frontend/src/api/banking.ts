@@ -8,9 +8,13 @@ import type {
   SecureResponse,
   AnalysisResponse,
   CardResponse,
+  InvestigationsResponse,
+  InvestigationResponse,
 } from "./types";
 
 export const banking = {
+  investigations: (account: string, offset = 0) => request<InvestigationsResponse>(`/accounts/${encodeURIComponent(account)}/investigations?limit=20&offset=${offset}`),
+  investigation: (account: string, id: string) => request<InvestigationResponse>(`/accounts/${encodeURIComponent(account)}/investigations/${encodeURIComponent(id)}`),
   health: () => request<Health>("/health"),
   cards: (account: string) => request<CardResponse>(`/accounts/${encodeURIComponent(account)}/cards`),
   card: (account: string, card: string) => request<CardResponse>(`/accounts/${encodeURIComponent(account)}/cards/${encodeURIComponent(card)}`),

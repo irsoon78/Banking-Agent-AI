@@ -1564,3 +1564,22 @@ footer > span:first-child {
     margin-left: auto;
   }
 }
+.investigation-report { min-width: 0; overflow-wrap: anywhere; }
+.investigation-report h4 { margin: 0 0 10px; font-size: 15px; }
+.investigation-statuses { display: flex; flex-wrap: wrap; gap: 7px; margin: 14px 0; }
+.investigation-section { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line, #dce4ed); }
+.investigation-section > summary { font-weight: 650; cursor: pointer; padding-bottom: 10px; }
+.investigation-evidence { margin: 12px 0; padding: 14px; border: 1px solid var(--line, #dce4ed); border-radius: 12px; background: var(--surface, #fff); }
+.investigation-evidence small { display: block; margin-top: 8px; color: var(--muted, #66758a); }
+.investigation-steps { padding-left: 22px; }
+.investigation-steps > li { padding: 12px 0; border-bottom: 1px solid var(--line, #dce4ed); }
+.investigation-steps p, .investigation-history-list p { margin: 6px 0; }
+.investigation-live-card { margin: 12px 0; }
+.investigation-current { margin-top: 12px; padding: 12px; border-left: 3px solid #32817a; }
+.investigation-history { border-bottom: 1px solid var(--line, #dce4ed); padding: 16px 24px; overflow-wrap: anywhere; }
+.investigation-history > summary { cursor: pointer; font-weight: 650; color: var(--primary, #234c74); }
+.investigation-history[open] { max-height: 75vh; overflow-y: auto; }
+.investigation-history-list { list-style: none; padding: 0; max-height: 240px; overflow-y: auto; }
+.investigation-history-list > li { border-bottom: 1px solid var(--line, #dce4ed); padding: 12px 0; }
+.investigation-history-detail { margin-top: 18px; }
+@media (max-width: 760px) { .investigation-history { padding: 14px; } .investigation-report dl > div { min-width: 0; } }

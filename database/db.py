@@ -90,6 +90,10 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_audit_request_id
             ON audit_logs(request_id, id)
         """)
+        # 仅建立调查元数据表；不导入消费/卡片样本，也不改变业务账本。
+        from investigation.storage import SCHEMA
+        conn.execute(SCHEMA)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_investigation_account ON investigation_reports(account_id, created_at DESC)")
         for account_id, owner, cents in (
             ("1001", "张三", 1_000_000),
             ("1002", "李四", 500_000),

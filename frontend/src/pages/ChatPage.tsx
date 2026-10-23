@@ -12,8 +12,10 @@ import {
 } from "../components/ui";
 import { RiskPanel } from "../components/RiskPanel";
 import { AuditTimeline } from "../components/AuditTimeline";
+import { InvestigationHistory } from "../components/InvestigationHistory";
 
 const examples = [
+  "帮我调查2026年10月有没有可疑消费，特别是重复扣款。",
   "你好",
   "你能做什么？",
   "查询我的银行卡",
@@ -26,6 +28,8 @@ export function ChatPage() {
   const [draft, setDraft] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
   const blocked = state.loading.chat || state.loading.action || state.uncertain;
+  const latestInvestigationId = state.messages.reduce<string | undefined>((id, entry) =>
+    entry.response && "investigation" in entry.response && entry.response.investigation ? entry.response.investigation.investigation_id : id, undefined);
   useEffect(() => {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }, [state.messages.length, state.loading.chat]);
@@ -84,6 +88,7 @@ export function ChatPage() {
               新对话
             </button>
           </div>
+          <InvestigationHistory account={state.account_id} latestId={latestInvestigationId} />
           <div
             className="messages"
             aria-live="polite"
@@ -96,7 +101,7 @@ export function ChatPage() {
                 </div>
                 <h2>今天有什么可以帮你？</h2>
                 <p>
-                  查余额、看账单，或发起一笔模拟转账。
+                  查余额、看账单、调查异常消费，或管理模拟银行卡。
                   <br />
                   工具、风险和执行结果将在这里展示。
                 </p>
@@ -122,7 +127,7 @@ export function ChatPage() {
                 </div>
                 <div className="message-body">
                   {entry.response ? (
-                    <ResponseContent response={entry.response} />
+                    <ResponseContent response={entry.response} account={state.account_id} />
                   ) : (
                     <p
                       className={
@@ -166,7 +171,7 @@ export function ChatPage() {
               value={draft}
               disabled={blocked}
               onChange={(event) => setDraft(event.target.value)}
-              placeholder="可以打个招呼，也可以让我查余额或办理模拟转账"
+              placeholder="例如：帮我调查2026年10月的相似消费；也可以查余额或管理模拟银行卡"
               onKeyDown={(event) => {
                 if (
                   event.key === "Enter" &&

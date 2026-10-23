@@ -13,6 +13,7 @@ import { demoReducer, initialState } from "./demoReducer";
 import type { DemoState, Message } from "./demoReducer";
 import { LatestRead } from "./latestRead";
 import { actionArguments, canResolve, isCardPending, matchesRecovery, MutationGate } from "./cardFlow";
+import { validateInvestigation } from "./investigationRead";
 
 interface DemoContextValue {
   state: DemoState;
@@ -140,6 +141,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
           text,
           current.conversation_id,
         );
+        if (response.investigation) validateInvestigation(response.investigation, current.account_id, response.investigation_id ?? undefined);
         dispatch({ type: "chat", response });
         message({ role: "assistant", text: response.message, response });
         await Promise.all([

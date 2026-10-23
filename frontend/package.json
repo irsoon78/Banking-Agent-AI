@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
-    "test": "node --experimental-strip-types --test src/state/demoReducer.test.ts src/state/latestRead.test.ts src/state/analysisQuery.test.ts src/state/cardFlow.test.ts src/components/AnalysisView.test.mjs src/components/Cards.test.mjs"
+    "test": "node --experimental-strip-types --test src/state/demoReducer.test.ts src/state/latestRead.test.ts src/state/analysisQuery.test.ts src/state/cardFlow.test.ts src/components/AnalysisView.test.mjs src/components/Cards.test.mjs src/components/Investigation.test.mjs"
   },
   "dependencies": {
     "react": "^19.2.0",

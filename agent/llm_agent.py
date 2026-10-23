@@ -163,6 +163,28 @@ class BankingAgent:
         diagnostics = []
         # allow_transfer 来自服务端对待确认任务的检查，不采用助手历史或客户端状态。
         dialogue_context = DialogueContext(transfer_pending=not allow_transfer)
+        # 独立调查模式不扩展普通Agent工具白名单，且优先于单项分析/卡片路由。
+        from agent.investigation_intents import resolve_investigation_request, investigation_clarification
+        investigation = resolve_investigation_request(message, account_id)
+        if investigation is not None:
+            if investigation.options is None:
+                return investigation_clarification(investigation.code)
+            from card_management.authorization import current_conversation
+            conversation_id = current_conversation()
+            if conversation_id is None:
+                return investigation_clarification("INVESTIGATION_SECURE_ENTRY_REQUIRED")
+            from investigation.planner import run_planned_investigation, render_investigation
+            from api.responses import record_decision
+            report = await run_planned_investigation(client=self.client, model=self.model,
+                account_id=account_id, options=investigation.options, conversation_id=conversation_id)
+            for step in report["steps"]:
+                for decision in step["decisions"]:
+                    record_decision(decision)
+            return {"status": report["status"], "reply": render_investigation(report),
+                "tool_results": [], "response_kind": "business_result", "diagnostic_codes": ["INVESTIGATION_REPORT"],
+                "investigation_id": report["investigation_id"], "investigation": report,
+                "execution_status": report["execution_status"], "coverage_status": report["coverage_status"],
+                "planner_mode": report["planner_mode"]}
         analysis_request = resolve_analysis_request(message, account_id)
         card_request = resolve_card_request(message, account_id)
 

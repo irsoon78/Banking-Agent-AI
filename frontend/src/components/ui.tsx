@@ -11,6 +11,7 @@ import { useDemo } from "../state/DemoProvider";
 import { AnalysisView } from "./AnalysisView";
 import { CardDataView, CardOperationView } from "./CardView";
 import { hasCardReceipt } from "../state/cardFlow";
+import { InvestigationView } from "./InvestigationView";
 
 export function Icon({
   name,
@@ -328,9 +329,16 @@ export function Receipt({ response }: { response: ActionResponse }) {
 }
 export function ResponseContent({
   response,
+  account,
 }: {
   response: SecureResponse | ActionResponse;
+  account?: string;
 }) {
+  if ("investigation" in response && response.investigation) {
+    return <><InvestigationView report={response.investigation} account={account ?? response.investigation.account_id} />
+      {response.audit_warning && <Alert>{response.audit_warning}</Alert>}
+      <div className="message-links"><AuditLink id={response.audit_id} /></div></>;
+  }
   if (
     "response_kind" in response &&
     response.response_kind !== "business_result"

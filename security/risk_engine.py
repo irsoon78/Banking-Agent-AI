@@ -22,6 +22,7 @@ class RiskEngine:
         "query", "query_balance", "query_bill", "query_bills", "get_balance", "get_bills",
         "analyze_spending", "compare_spending", "list_spending_records", "get_spending_record",
         "list_cards", "get_card", "get_card_for_spending_record", "get_card_operation",
+        "list_investigations", "get_investigation",
     })
     CARD_TEMP_OPERATIONS = frozenset({"temporarily_freeze_card", "remove_temporary_freeze"})
     CARD_RED_OPERATIONS = frozenset({"report_card_loss", "cancel_card_loss_report"})

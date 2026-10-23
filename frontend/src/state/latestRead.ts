@@ -3,6 +3,11 @@ export class LatestRead {
   private generation = 0;
   private pending: Promise<void> | null = null;
 
+  invalidate(): void {
+    ++this.generation;
+    this.pending = null;
+  }
+
   run(
     work: (isLatest: () => boolean) => Promise<void>,
     force = false,

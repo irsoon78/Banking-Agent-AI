@@ -182,6 +182,11 @@ class SecureChatResponse(ChatResponse):
     error_code: str | None = None
     error: ErrorResponse | None = None
     pending_action: dict | None = None
+    investigation_id: str | None = None
+    investigation: dict | None = None
+    execution_status: Literal["running", "completed", "partial", "failed", "interrupted"] | None = None
+    coverage_status: Literal["complete", "incomplete", "unknown"] | None = None
+    planner_mode: Literal["model_planned", "deterministic_fallback", "deterministic_no_choice"] | None = None
 
 
 class ActionRequest(BaseModel):
@@ -350,6 +355,54 @@ def spending_record_card(account_id: str, record_id: str, request: Request):
 @app.get("/accounts/{account_id}/card-operations/{action_id}")
 def card_operation(account_id: str, action_id: str, request: Request):
     return audited_query("get_card_operation", account_id, {"action_id": action_id}, request)
+
+
+@app.get("/accounts/{account_id}/investigations")
+def investigations(account_id: str, request: Request, limit: int = Query(default=20, ge=1, le=20),
+                   offset: int = Query(default=0, ge=0, le=1000)):
+    return audited_investigation_query("list_investigations", account_id, request, limit=limit, offset=offset)
+
+
+@app.get("/accounts/{account_id}/investigations/{investigation_id}")
+def investigation_detail(account_id: str, investigation_id: str, request: Request):
+    return audited_investigation_query("get_investigation", account_id, request, investigation_id=investigation_id)
+
+
+def audited_investigation_query(operation, account_id, request, **params):
+    from investigation.contracts import InvestigationError
+    from investigation.storage import InvestigationStore
+    logger = request.app.state.audit_logger
+    try:
+        with logger.request_context(account_id, "查询已保存的只读调查", operation) as context:
+            logger.log_event("request_received", context, details={"operation": operation})
+            risk = RiskEngine().evaluate(operation)
+            permission = PermissionController().decide(operation, risk["risk_level"])
+            context.update(risk_level=risk["risk_level"], permission_action=permission["action"])
+            decision = {"operation": operation, "risk_level": risk["risk_level"], "risk_reason": risk["reason"],
+                        "permission_action": permission["action"], "require_confirmation": permission["require_confirmation"],
+                        "require_verification": permission["require_verification"]}
+            logger.log_event("risk_evaluated", context, details={"reason": risk["reason"]})
+            logger.log_event("permission_decided", context, details=permission)
+            if permission["action"] != "allow":
+                raise APIError(403, "FORBIDDEN", "不允许读取调查。")
+            try:
+                store = InvestigationStore()
+                result = store.get(account_id, params["investigation_id"]) if operation == "get_investigation" else store.list(account_id, **params)
+            except InvestigationError as exc:
+                logger.log_event("investigation_snapshot_read_failed", context, execution_result="failed", details={"code": exc.code})
+                raise APIError(404 if exc.code == "INVESTIGATION_NOT_FOUND" else 422 if exc.code == "INVALID_ARGUMENTS" else 503,
+                               exc.code, str(exc), detail={"request_id": context["request_id"], "audit_id": context["request_id"]}) from None
+            logger.log_event("investigation_snapshot_read", context, execution_result="success",
+                             details={"investigation_id": params.get("investigation_id"), "mode": "stored_snapshot_only"})
+            return {"account_id": account_id, "request_id": context["request_id"], "audit_id": context["request_id"],
+                    "decision": decision, "investigation": result} if operation == "get_investigation" else {
+                    "account_id": account_id, "request_id": context["request_id"], "audit_id": context["request_id"], "decision": decision, **result}
+    except APIError:
+        raise
+    except AuditError:
+        raise APIError(503, "AUDIT_UNAVAILABLE", "调查查询审计失败，未宣称查询成功。") from None
+    except Exception:
+        raise APIError(503, "INVESTIGATION_STORAGE_UNAVAILABLE", "调查快照无法可靠读取，未重新执行调查。") from None
 
 
 def audited_query(name: str, account_id: str, params: dict, request: Request):

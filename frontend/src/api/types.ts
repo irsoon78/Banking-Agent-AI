@@ -158,6 +158,11 @@ export interface SecureResponse extends Partial<Decision> {
   audit_warning?: string;
   error_code?: string;
   error?: ApiErrorBody;
+  investigation_id?: string | null;
+  investigation?: InvestigationReport | null;
+  execution_status?: InvestigationExecution | null;
+  coverage_status?: InvestigationCoverage | null;
+  planner_mode?: InvestigationPlanner | null;
 }
 export interface ActionResponse {
   status: "completed" | "cancelled" | "failed" | "execution_unknown" | "require_verification";
@@ -280,4 +285,73 @@ export interface AnalysisResponse extends ToolData {
   tool: string;
   decisions: Decision[];
   data_status: "available" | "incomplete_coverage" | "no_records";
+}
+
+export type InvestigationExecution = "running" | "completed" | "partial" | "failed" | "interrupted";
+export type InvestigationCoverage = "complete" | "incomplete" | "unknown";
+export type InvestigationPlanner = "model_planned" | "deterministic_fallback" | "deterministic_no_choice";
+export interface InvestigationSummary {
+  investigation_id: string;
+  period?: { start_date: string; end_date_exclusive: string; time_zone: string };
+  focus?: "similar" | "large" | "all";
+  dataset?: SpendingDataset | null;
+  execution_status?: InvestigationExecution;
+  coverage_status?: InvestigationCoverage;
+  planner_mode?: InvestigationPlanner;
+  started_at?: string;
+  finished_at?: string | null;
+  recovery?: { source: "stored_snapshot"; revision: number; updated_at: string; rerun: false };
+}
+export interface InvestigationStep {
+  step_id: string;
+  tool: string;
+  evidence_ref?: string | null;
+  depends_on?: string[];
+  status: "planned" | "running" | "succeeded" | "failed" | "skipped" | "not_executed";
+  started_at?: string | null;
+  finished_at?: string | null;
+  execution_index?: number | null;
+  request_id?: string | null;
+  audit_event_ids?: number[];
+  decisions?: Decision[];
+  code?: string | null;
+}
+export interface InvestigationReport extends InvestigationSummary {
+  schema_version: "investigation.v1";
+  account_id: string;
+  status?: string;
+  coverage?: SpendingReport["coverage"] | null;
+  analysis_summary?: SpendingReport["summary"] | null;
+  findings?: { evidence_ref: string; source_step_id: string; finding: { rule_id: string; record_ids: string[]; reason: string }; record_refs: string[]; status?: string; observed_interval_minutes?: string; observed_interval_milliseconds?: number }[];
+  steps?: InvestigationStep[];
+  evidence?: {
+    records?: { evidence_ref: string; record_id: string; status: string; record?: SpendingRecord | null; read_at?: string; step_id?: string; link_ref?: string }[];
+    links?: { evidence_ref: string; record_ref: string; status: string; linked: boolean | null; card_ref: string | null; reason_code?: string; read_at?: string; payment_instrument_ref?: string | null; step_id?: string }[];
+    cards?: { evidence_ref: string; card_id: string; status: string; card?: Card | null; read_at?: string | null; step_id?: string; source_link_refs?: string[] }[];
+  };
+  planning?: { model_calls?: number; status?: string; fallback_reason?: string | null; events?: { index: number; status: string; code: string; step_id?: string; reason_code?: string; audit_event_id?: number | null }[] };
+  audit?: { request_id?: string; event_ids?: number[]; status?: string };
+  errors?: { step_id: string | null; code: string; message: string }[];
+  limits?: string[];
+  budget?: { tool_attempts: number; max_tool_calls: number; max_records: number; unfinished_records: number; record_limit_omitted: number };
+  persistence_status?: string;
+  disclaimer?: string;
+  safety?: { note: string; business_writes_allowed: false; mode: string };
+}
+export interface InvestigationsResponse {
+  account_id: string;
+  items: InvestigationSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+  request_id: string;
+  audit_id: string;
+  decision: Decision;
+}
+export interface InvestigationResponse {
+  account_id: string;
+  investigation: InvestigationReport;
+  request_id: string;
+  audit_id: string;
+  decision: Decision;
 }
