@@ -1,750 +1,391 @@
-# Banking Agent AI
+# Banking-Agent-AI · v0.4.0-cross-scenario-mvp
 
-一个基于 **Python + FastAPI + SQLite + LLM Tool Calling** 的银行智能体 Demo。
-LLM 使用 **DeepSeek 官方兼容接口**，Python 调用仍使用 **OpenAI SDK**。
-支持自然对话、查询余额、查询最近账单、独立模拟消费分析和受控模拟转账；已有 React 演示前端。没有登录认证、MCP 或真实银行接入。
+基于 Python、FastAPI、SQLite 和 LLM Tool Calling 的模拟银行智能体比赛 Demo。模型负责理解自然语言及受限调查规划，Python 工具提供可信业务数据，服务端独立决定风险、权限和执行条件。前端采用 React + TypeScript + Vite。
 
-第二阶段消费分析的样本、只读API、自然语言指令、独立环境启动与验收方法见 [账单分析说明](docs/BILL_ANALYSIS.md)。模拟消费样本不参与账户余额核算，不能把转账自动归类为消费。
+当前已实现智能转账、账单智能分析、模拟银行卡管理及跨场景消费调查。**不是实际银行服务，不连接真实资金或银行卡支付网络，也没有生产级登录和持卡人认证。**
 
-**统一对话入口为 `/chat/secure`，确认/取消仍通过 `/confirm`、`/cancel`。旧 `/chat` 仅保留只读和非业务对话兼容，任何转账都会被后端拒绝。转账现按北京时间业务日累计判断，并在确认事务内复核，见第 18 节。** V0.3.0 原协议见第 14 节；第 9–14 节保留阶段历史，旧单笔规则和直接执行行为已被后续安全加固替代。
+- GitHub 仓库：[irsoon78/Banking-Agent-AI](https://github.com/irsoon78/Banking-Agent-AI)（访问需具备仓库权限）。
+- 稳定标签：`v0.4.0-cross-scenario-mvp`；对应提交：`6f36a32cb10ef0a1381f8d385ff36678590cce2d`。
+- 当前开发分支：`feature/cross-scenario-v0.1`。
+- 版本标识说明：上述为项目稳定标签；`main.py` 的 FastAPI/OpenAPI 版本、前端页眉仍显示 `V0.3.0`，`frontend/package.json` 仍为 `0.1.0`，尚未统一，不代表缺少第四阶段功能。
+- [项目正式存档（2026-10-23）](docs/PROJECT_ARCHIVE_2026-10-23.md)保留当时验收及发布状态；后续本地标签或远端状态应以实际 Git 查询为准。
 
-## 1. 项目结构与文件职责
+## 1. 当前功能与安全策略
+
+| 场景 | 已实现能力 | 执行边界 |
+| --- | --- | --- |
+| 自然对话与查询 | 基础交流、能力说明、余额与最近账单查询、账户隔离的有限会话 | 金融事实来自工具；普通文本不能授权交易 |
+| 智能转账 | 意图与参数校验、日累计风控、确认/取消、事务记账、审计 | 黄色确认后执行；红色无强验证放行能力 |
+| 账单分析 | 分类、商户排行、每日趋势、同期比较、异常提示、原始记录分页追溯 | 独立模拟消费样本，不参与账户余额核算 |
+| 银行卡管理 | 列表、详情、状态、消费关联、临时冻结与解除临时冻结 | 临时操作黄色待确认；正式挂失与解挂红色阻断 |
+| 跨场景调查 | 异常分析 → 原始记录核验 → 可信卡片关联 → 卡片状态查询 → 报告与历史恢复 | 仅四种业务只读工具，不自动发起处置 |
+| 风险与审计 | 服务端风险/权限决策、一次性许可、凭据、请求与步骤追溯 | 模型文本、调查报告ID和客户端按钮均不是授权凭据 |
+
+### 转账按日累计判断，不按单笔金额独立判断
+
+项目采用 `Asia/Shanghai` 北京时间业务日（现代 UTC+08:00），这是项目规则，不宣称由比赛官方指定。计算：
+
+`当前账户当日已提交成功的转出金额 + 本笔拟转账金额`
+
+- 正数累计不超过 **1000.00 元**：`yellow / pending_confirmation`，API 返回 `status: pending`，正式确认前不执行。
+- 累计超过 **1000.00 元**：`red / require_verification`，不创建可确认任务，不扣款。
+- 零累计时500元为黄色、5000元为红色；已有转出时，以真实账本重新评估，不能拆分绕过。
+- 确认时在同一个 `BEGIN IMMEDIATE` 事务内查询完整累计、复核风险/权限并记账。待确认、取消、失败、回滚不计入；已提交资金即使后续响应或审计失败，仍计入累计。
+- 金额使用整数分或 Decimal。旧 `/chat` 和独立 Agent 默认执行器继续禁止业务写入。
+
+银行卡临时操作需明确唯一目标，可使用内部 card_id，或服务端在当前账户内严格匹配的完整卡名及尾号。名称/尾号仅用于定位，不是身份认证。卡片任务5分钟有效，确认时使用专用一次性许可，并在事务内复核账户、状态版本及转换条件；解除临时冻结不能解除正式挂失。
+
+## 2. 技术架构与项目结构
+
+```text
+浏览器 React / HashRouter
+  → FastAPI /chat/secure + 服务端会话
+  → BankingAgent 意图识别、严格参数校验
+  → RiskEngine → PermissionController
+  → 绿色只读 / 黄色待确认 / 红色强验证阻断
+  → 可信工具结果、业务凭据、审计
+
+调查专用模式：
+  固定账户/日期/重点 → 服务端就绪步骤集合
+  → 模型选择合法步骤 → 服务端再次核验依赖与证据
+  → 四种只读工具 → 调查快照持久化 → 历史GET恢复
+```
 
 ```text
 Banking-Agent-AI/
-├── main.py                    # FastAPI、配置加载、启动初始化、HTTP 接口
-├── deepseek_client.py         # DeepSeek HTTP 协议兼容配置，保留本地校验
-├── api/
-│   ├── __init__.py             # HTTP 层包标记
-│   └── responses.py            # Demo 响应模型、请求决策收集和统一错误处理
-├── agent/
-│   ├── __init__.py             # Python 包标记
-│   ├── llm_agent.py            # 工具描述、参数校验、调用循环、工具结果回复
-│   ├── dialogue.py             # 非业务回复分类、保守文本与写意图边界
-│   ├── sessions.py             # 按账户隔离、有界、可过期的内存会话
-│   └── prompt.py               # 系统提示词：功能范围与工具使用规则
-├── tools/
-│   ├── __init__.py             # Python 包标记
-│   ├── account.py              # get_balance：独立查询账户余额
-│   ├── transfer.py             # transfer_money：事务内模拟转账及双边记账
-│   └── bill.py                 # get_bills：独立查询最近账单
-├── database/
-│   ├── __init__.py             # Python 包标记
-│   ├── db.py                   # 连接管理、建表、演示数据、金额格式化
-│   └── banking.db              # 首次启动自动生成，不包含在源码压缩包中
-├── security/
-│   ├── __init__.py             # 导出风险、权限和确认管理器
-│   ├── risk_engine.py          # 独立于 LLM 的确定性风险分类
-│   ├── permission.py           # 将风险等级映射为执行权限策略
-│   ├── audit.py                # SQLite 审计事件写入和历史查询
-│   └── confirmation.py         # 待确认任务保存、确认、取消与权限调度
-├── tests/
-│   ├── __init__.py             # Python 包标记
-│   ├── test_banking.py         # 临时数据库、事务与模拟 LLM/SDK 测试
-│   ├── test_risk_engine.py     # 风险等级、阈值、无效输入与扩展操作测试
-│   ├── test_permission.py      # 权限策略及 Risk Engine 组合测试
-│   ├── test_confirmation.py    # 确认流程、并发和 HTTP/SDK/SQLite 测试
-│   ├── test_audit.py           # 审计链、持久化与写入故障测试
-│   └── test_demo_api.py        # 结构化决策、确认响应、错误及兼容性测试
-├── .env.example               # 环境变量示例
-├── .gitignore                 # 忽略密钥、虚拟环境、缓存和数据库
-├── AGENTS.md                  # 稳定基线、V0.2 分支与提交规则
-├── requirements.txt           # 运行及测试依赖；SQLite 使用 Python 标准库
-└── README.md                  # 本文档
+├── main.py                 # FastAPI、配置加载、会话与安全API
+├── deepseek_client.py      # OpenAI SDK连接DeepSeek的HTTP兼容层
+├── agent/                  # 对话、工具参数、意图路由、有界会话
+├── security/               # 风险、权限、日累计、确认取消、审计和许可
+├── tools/                  # 余额、账单、受保护的模拟转账
+├── database/               # SQLite连接、基础表与账户初始化
+├── bill_analysis/          # 独立消费数据集、确定性统计、异常规则、离线样本
+├── card_management/        # 模拟卡、明确映射、状态版本、事务及操作凭据
+├── investigation/          # 调查契约、可信证据、受限规划、执行和存储
+├── api/                    # 响应组装与统一错误协议
+├── frontend/               # React + TypeScript + Vite页面及前端测试
+├── tests/                  # 临时数据库、模拟模型及HTTP回归
+├── docs/                   # 各阶段说明与正式存档
+├── .env.example            # 空密钥及配置示例
+└── requirements.txt        # Python固定依赖；SQLite使用标准库
 ```
 
-## 2. 运行环境与安装
+后端使用 FastAPI、Pydantic、SQLite、httpx、python-dotenv 和 OpenAI SDK；后者通过配置的 `base_url` 连接 DeepSeek，不代表使用 OpenAI 模型。前端使用 HashRouter、Context/reducer、fetch 和普通 CSS，无新图表库、通用工作流引擎或额外模型服务。
 
-需要 Python **3.10 或更高版本**。在终端进入 `Banking-Agent-AI` 目录。直接依赖固定为本次验证的版本。
+## 3. 环境与首次配置
 
-Windows PowerShell：
+已验证运行环境：Windows PowerShell、Python **3.14.7**、Node.js **24.22.0**。Python源码使用3.10及以上语法；其他组合未逐一验收。Vite 7要求 Node.js `^20.19.0 || >=22.12.0`，前端测试还需要支持 `--experimental-strip-types`，建议复用已验证的Node 24环境。
+
+以下命令均为操作说明；**已有虚拟环境、依赖和.env时跳过首次准备，不重复安装或覆盖配置。**
+
+首次获取源码可使用以下命令，在存放项目的父目录执行；不要在已有项目目录内再次克隆：
+
+```powershell
+git clone --branch v0.4.0-cross-scenario-mvp https://github.com/irsoon78/Banking-Agent-AI.git Banking-Agent-AI
+Set-Location .\Banking-Agent-AI
+```
+
+需远端已发布该标签且当前Git身份可访问仓库；按标签克隆处于分离HEAD，适合运行，不在此说明中切换开发分支。如果远端不可达或标签不存在，停止检查，不重置当前工作区。
+
+本机现有项目根目录为：
+
+```powershell
+Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+```
+
+以下启动和测试代码块使用该路径。其他机器请替换为实际克隆目录，前端使用其 `frontend` 子目录。
+
+仅首次在项目根目录准备后端：
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item .env.example .env
-```
-
-macOS / Linux：
-
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-cp .env.example .env
-```
-
-在 [DeepSeek 官方平台](https://platform.deepseek.com/) 创建 API Key，然后编辑 `.env`：
-
-```dotenv
-DEEPSEEK_API_KEY=你的DeepSeekAPIKey
-DEEPSEEK_BASE_URL=https://api.deepseek.com/beta
-DEEPSEEK_MODEL=deepseek-flash
-BANK_DB_PATH=database/banking.db
-```
-
-仍使用 `from openai import AsyncOpenAI` 和 `client.chat.completions.create(...)`，通过 `base_url` 连接 DeepSeek 官方 OpenAI 兼容接口，不需要安装 DeepSeek SDK。
-
-| 环境变量 | 用途 | 默认值 |
-| --- | --- | --- |
-| `DEEPSEEK_API_KEY` | DeepSeek 官方 API Key，不能使用 OpenAI Key | 空；自然语言接口不可用 |
-| `DEEPSEEK_BASE_URL` | SDK 连接地址，填写基础地址而非完整 `/chat/completions` URL | `https://api.deepseek.com/beta` |
-| `DEEPSEEK_MODEL` | 支持工具调用的 DeepSeek 模型 | `deepseek-flash` |
-| `BANK_DB_PATH` | SQLite 路径，相对路径基于项目目录 | `database/banking.db` |
-
-默认模型名采用当前官方文档中的 `deepseek-flash`。DeepSeek 标准兼容地址为 `https://api.deepseek.com`；本项目原有工具使用 `strict=True`，因此配置为官方要求的 **`https://api.deepseek.com/beta`**。请保留这个 Beta 地址，模型是否可用取决于你的 DeepSeek 账户。
-
-连接层使用非思考模式，并在发送给 DeepSeek 的 schema 副本中移除其不支持的字符串长度关键字；原有 Python 长度校验保持生效。DeepSeek 请求不发送官方接口未定义的 `parallel_tool_calls` 参数，Agent 原有的单工具调用检查仍执行。
-
-原有 `.env` 若使用 `OPENAI_API_KEY` / `OPENAI_MODEL`，请将其改为上述 DeepSeek 变量；项目不再从这两个旧变量读取 Key 或模型。
-已存在的系统环境变量优先于 `.env`。修改配置后需要重启服务。
-
-Windows 启动：
-
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
-```
-
-macOS / Linux 启动：
-
-```bash
-.venv/bin/python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
-```
-
-访问 [Swagger 接口文档](http://127.0.0.1:8000/docs)，比赛流程通过 `POST /chat/secure` 的 **Try it out** 测试；下文旧 `/chat` 示例用于兼容测试。
-不填写 Key 也可以启动服务并调用健康检查、直连余额与账单接口；自然语言 `/chat` 会返回 503 配置提示。
-
-## 3. 演示账户
-
-首次初始化数据库生成以下数据，均为本地模拟数据：
-
-| 账户编号 | 户名 | 初始余额 |
-| --- | --- | --- |
-| 1001 | 张三 | 10000.00 元 |
-| 1002 | 李四 | 5000.00 元 |
-
-每个账户有一条对应的演示初始入账记录。重启不会重置余额或重复添加初始记录。
-所有金额单位为人民币，内部存储为整数“分”，JSON 展示金额为两位小数字符串。
-账单时间为 UTC，格式中的 `Z` 表示 UTC。
-
-## 4. 自然语言调用
-
-`POST /chat/secure` 请求：
-
-```json
-{"account_id": "1001", "message": "查询我的余额"}
-```
-
-`account_id` 可省略，默认 `1001`。它由 API 传给工具，模型无法通过工具参数更换当前账户。
-本 Demo 没有登录，调用者可以在请求中选择演示账户。
-
-其他可直接使用的完整请求：
-
-```json
-{"account_id": "1001", "message": "查看我最近5条账单"}
-```
-
-```json
-{"account_id": "1001", "message": "请给账户1002模拟转账100.50元"}
-```
-
-PowerShell 示例（确保服务已经启动）：
-
-```powershell
-$body = @{ account_id = '1001'; message = '查询我的余额' } | ConvertTo-Json
-Invoke-RestMethod -Uri 'http://127.0.0.1:8000/chat/secure' -Method Post -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
-```
-
-余额查询成功时返回以下结构；金额以当前数据库为准，此处展示首次启动的数据：
-
-```json
-{
-  "status": "completed",
-  "reply": "账户 1001（张三）余额：10000.00 元。",
-  "tool_results": [
-    {
-      "tool": "get_balance",
-      "result": {
-        "ok": true,
-        "account_id": "1001",
-        "owner": "张三",
-        "balance": "10000.00",
-        "balance_cents": 1000000,
-        "currency": "CNY"
-      }
-    }
-  ]
+if (-not (Test-Path -LiteralPath '.env')) {
+    Copy-Item -LiteralPath '.env.example' -Destination '.env' -ErrorAction Stop
 }
 ```
 
-模拟转账成功后，两边余额及两条关联同一 `transfer_id` 的账单同时提交。
-工具返回 `simulated: true`、交易编号、金额、账户编号及转出账户余额。
-若从初始数据执行上面的 `100.50` 元转账，余额将变为 `9899.50` 元和 `5100.50` 元。
+由用户在本机编辑新建的.env，填写自己的DeepSeek Key。不要在截图、聊天、源码或前端配置中暴露Key。项目读取以下变量：
 
-旧 `/chat` 是无会话的只读兼容入口。`/chat/secure` 返回 `conversation_id`，后续请求传回此编号即可有限连续交流；缺少转账信息时可以补充用户自己的账户编号和金额。
-每条请求支持一笔转账；转账完成后立即返回，不继续执行该请求中的后续查询。需要查看最新账单时另发请求。
-同一转账指令通过新的 HTTP 请求再次发送，会产生另一笔模拟转账。本 Demo 未实现跨请求幂等。
-
-## 5. 接口一览与错误
-
-| 接口 | 用途 | 需要 LLM Key |
-| --- | --- | --- |
-| `GET /health` | 服务状态和 LLM 是否已配置 | 否 |
-| `POST /chat` | 无会话只读/对话兼容入口，拒绝所有转账 | 是 |
-| `POST /chat/secure` | 自然语言风险、权限及黄色确认入口 | 是 |
-| `POST /confirm` | 确认指定账户的待执行任务 | 否 |
-| `POST /cancel` | 取消指定账户的待执行任务 | 否 |
-| `GET /audit/1001` | 查询该账户的持久化审计事件 | 否 |
-| `GET /accounts/1001/balance` | 直接调用余额工具，便于验证 | 否 |
-| `GET /accounts/1001/bills?limit=10` | 直接调用账单工具，支持 1–100 条 | 否 |
-
-`/chat` 返回的 `status`：
-
-- `completed`：请求的工具执行结束。
-- `needs_input`：模型没有选择工具；返回固定的信息补全提示，不采用模型自行生成的金融描述。
-- `failed`：工具参数、账务校验或数据库操作失败，具体错误见 `tool_results` 或 `reply`。
-- `partial`：已有查询结果，但后续 LLM 失败或调用达到上限，返回已经完成的工具结果。
-
-HTTP 422 表示请求参数不合法；缺少 Key 返回 503；LLM 连接/API 错误返回 502，超时返回 504。
-业务工具失败通过 HTTP 200 中的 `status: failed` 和 `result.ok: false` 表达，不能仅根据 HTTP 200 判断转账成功。
-直接查询不存在的账户返回 404，数据库错误返回 503。
-
-转账工具检查金额格式、正数、账户存在、同账户转账、余额不足和收款余额上限。
-它使用参数化 SQL 和 `BEGIN IMMEDIATE`；扣款、收款或账单写入失败会回滚整个事务。
-模型每次只允许一个工具调用；参数仍由 Python 校验，未知工具不会执行。
-
-## 6. Agent 的实现路径
-
-```text
-自然语言请求 → LLM 根据工具描述返回函数名和 JSON 参数
-            → Python 校验参数并调用独立工具
-            → SQLite 读取或事务写入
-            → 查询结果回传给 LLM（可继续选择查询工具）
-            → 后端依据工具结果生成 reply 和 tool_results
-```
-
-查询最多进行 6 轮模型调用。金融回复使用 Python 模板，模型返回的自由文本不会成为 API 的金融事实。
-转账是终止工具：提交成功后直接返回工具交易凭据，避免提交后还依赖一次模型调用，也避免本轮重复扣款。
-系统提示词指导模型如何理解指令；是否正确理解各种复杂语句仍需要实际模型验证。本 Demo 适合上述明确指令。
-没有规则匹配器替代 LLM；测试中的模拟模型仅用于离线验证，不参与正常运行。
-
-兼容接口和模型配置参考 [DeepSeek 官方首次调用说明](https://api-docs.deepseek.com/)；strict 模式地址及 schema 限制参考 [DeepSeek 官方 Tool Calls 文档](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)。
-本次适配没有修改 `agent/`、`tools/` 或 `database/` 中的实现。
-
-## 7. 测试
-
-Windows：
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
-```
-
-macOS / Linux：
-
-```bash
-.venv/bin/python -m unittest discover -s tests -v
-```
-
-测试使用独立临时数据库，不修改演示数据库。覆盖余额和账单、双边转账、金额精度、非法输入、余额不足、并发扣款、事务回滚、启动重复初始化、API 参数与缺少配置、SDK 工具回传、丢弃模型编造文本、调用上限和网络错误。
-测试使用 `httpx.MockTransport` 模拟 LLM API，不访问网络或消耗额度；真实自然语言理解需配置 Key 后通过 `/chat` 验证。
-
-测试还验证 DeepSeek 环境变量与默认配置、官方地址和认证头、strict schema 兼容处理，以及 HTTP `/chat` → OpenAI SDK → DeepSeek 模拟响应 → 工具 → SQLite 的查询和转账流程。
-以上为 DeepSeek 适配阶段的历史记录。本轮旧 `/chat` 转账测试已改为拒绝写操作；安全转账由 `/chat/secure` 创建任务并经 `/confirm` 执行，所有测试只用隔离数据。
-DeepSeek 适配阶段在 Windows / Python 3.12.14 上运行 **19 个测试，全部通过**。未使用真实 DeepSeek API Key 验证远程服务或模型理解。
-另已实际启动 Uvicorn，验证健康检查、余额、账单、OpenAPI 文档和缺少 Key 时的 HTTP 响应，并在验证后停止服务。
-
-## 8. 数据库初始化与重新演示
-
-服务启动时自动建表。也可以独立执行：
-
-```powershell
-.\.venv\Scripts\python.exe -m database.db
-```
-
-要重新从初始数据演示，停止服务后将 `.env` 中 `BANK_DB_PATH` 改为新文件，例如 `database/demo2.db`，再启动服务。
-旧数据库的余额和账单会保留。
-
-## 9. 稳定版本与 Git 开发流程
-
-当前稳定版本为 **V0.1.2**，状态为“首次 Agent 闭环成功”。项目原先没有 Git 仓库，现已将当前源码保存为 `main` 初始提交，并创建标签 `v0.1.2`。
-
-`main` 和 `v0.1.2` 保留稳定基线；后续所有 V0.2 修改均在 **`feature/security-v0.2`** 分支完成。不要在 `main` 上继续提交或重写历史，也不要移动稳定标签。
-
-修改前先检查：
-
-```bash
-git status --short --branch
-git diff
-git diff --cached
-```
-
-每完成一个明确功能，检查暂存文件与 diff、排除密钥和运行文件、运行相关测试，然后单独 commit。提交格式为 `feat: 描述`、`fix: 描述`、`refactor: 描述`。
-
-`.env`、`.venv`、数据库和缓存已配置为忽略；`.env.example` 仅允许空值或占位符。忽略规则不能防止源码中出现 API Key，因此每次提交仍须检查暂存内容。
-
-如果修改导致已有 V0.1 功能失败，立即停止后续开发并报告问题。完整规则见 [AGENTS.md](AGENTS.md)。Git 基线建立阶段仅设置版本与开发流程，未添加 V0.2 业务功能。
-
-## 10. V0.2.1 Risk Engine 基础模块
-
-Risk Engine 只负责根据操作和人民币金额返回 `risk_level`、`reason`，不依赖 LLM、FastAPI 或 SQLite，不执行资金操作。
-
-```python
-from security import RiskEngine
-
-engine = RiskEngine()
-result = engine.evaluate(operation="transfer", amount=500)
-# {"risk_level": "yellow", "reason": "小额转账需要用户确认"}
-```
-
-| 操作 | 风险等级 | 后续执行策略 |
-| --- | --- | --- |
-| `get_balance`、`get_bills`、`query` 等明确支持的查询 | `green` | 自动执行 |
-| `transfer` / `transfer_money`，金额为正数且 ≤ 1000 元 | `yellow` | 用户确认 |
-| 转账金额 > 1000 元 | `red` | 强验证 |
-| `high_risk`，以及预留的理财、卡片管理、订阅管理操作 | `red` | 强验证 |
-| 未知操作、转账金额缺失或无效 | `red` | 保守分类，不能因此跳过业务校验 |
-
-支持整数、浮点数、十进制字符串和 `Decimal` 金额。使用 `Decimal` 比较阈值，不进行舍入；拒绝布尔值、非数值、非有限数和非正数。风险分类不替代转账工具现有的金额精度、账户和余额校验。
-未来新增操作时，可扩展操作集合和专用评估方法；未知操作默认不会按低风险执行。
-
-未来接入时的流程为：用户请求 → Agent 识别工具和参数 → Risk Engine 根据实际待执行操作判断风险 → 执行策略处理自动执行、确认或强验证 → 工具执行。风险等级由 Python 规则确定，不能由模型自行选择。
-
-**V0.2.1 尚未将 Risk Engine 接入 Agent 或工具执行入口，也未实现用户确认和强验证。现有 `/chat` 的模拟转账行为保持不变。** 本模块已在 `feature/security-v0.2` 提交，commit 为 `78c9f7d`。
-
-仅运行风险模块测试：
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest tests.test_risk_engine -v
-```
-
-V0.2.1 基础模块已在 Windows / Python 3.14.7 下验证：新增 13 个风险测试与已有 19 个银行功能测试，共 **32 个测试全部通过**。既有业务代码未修改。
-
-## 11. V0.2.2 Permission System
-
-`PermissionController.decide(operation, risk_level)` 消费服务端 Risk Engine 的风险结果，返回执行策略。它不依赖 LLM、FastAPI 或 SQLite，不重新判断金额，也不执行银行工具。
-
-| 风险等级 | action | require_confirmation | require_verification |
-| --- | --- | --- | --- |
-| `green` | `allow` | `false` | `false` |
-| `yellow` | `pending_confirmation` | `true` | `false` |
-| `red` | `require_verification` | `false` | `true` |
-
-空白或非法操作参数、未知或非法风险等级保守返回 `require_verification`。输入无效不会因后续验证而自动成为有效业务请求，调用方仍须校验操作和参数。
-
-组合调用示例：
-
-```python
-from security import PermissionController, RiskEngine
-
-operation = "transfer"
-risk = RiskEngine().evaluate(operation=operation, amount=500)
-decision = PermissionController().decide(operation, risk["risk_level"])
-# {"action": "pending_confirmation",
-#  "require_confirmation": True, "require_verification": False}
-```
-
-调用方必须使用 Risk Engine 根据实际操作计算出的风险等级，不能接受 LLM 或用户自行声明的 `risk_level`。当前 Permission Controller 校验 operation 是否为非空字符串，已知操作识别及未知操作的保守分类由 Risk Engine 负责。
-
-安全模块的组合流程是：Agent 识别意图和工具参数 → Risk Engine 判断风险 → Permission Controller 返回执行策略 → 后续执行层处理策略。执行层只有收到 `allow` 才能直接调用工具；黄色和红色策略均不能直接执行。
-
-本阶段只实现权限决策模块及组合测试，**未接入现有 Agent 执行入口，`/chat` 的行为保持 V0.1.2 原样**。尚未实现确认后的恢复执行或真实身份验证。后续可由执行层接入人脸、短信验证码、U 盾等验证方式，并扩展理财申购、卡片挂失等操作策略。
-
-仅运行权限模块测试：
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest tests.test_permission -v
-```
-
-V0.2.2 已在 `feature/security-v0.2` 提交，commit 为 `85e11b8`。
-
-V0.2.2 已在 Windows / Python 3.14.7 下验证：新增 13 个权限测试、已有 13 个风险测试及 19 个银行功能测试，共 **45 个测试全部通过**。既有 Agent、工具、DeepSeek 连接和数据库实现未修改。
-
-## 12. V0.2.3 Confirmation Flow
-
-新增 `/chat/secure` 接入 Risk Engine、Permission Controller 和 `PendingActionManager`，提供黄色操作的确认流程。原有 `/chat` 保留 V0.1.2 直接执行行为；测试确认流程时请使用 **`/chat/secure`**。
-
-```text
-POST /chat/secure → 原 Agent 识别工具和参数 → 参数校验 → Risk Engine → Permission Controller
-  green  → 调用原工具
-  yellow → 保存待确认任务，返回 pending 和 action_id（此时不扣款）
-  red    → 返回 require_verification（不执行，也不创建可确认任务）
-
-POST /confirm → 校验账户及 action_id → 原子领取任务 → 调用原工具 → 返回工具结果
-POST /cancel  → 校验账户及 action_id → 删除任务，不执行工具
-```
-
-### 创建待确认转账
-
-```http
-POST /chat/secure
-Content-Type: application/json
-```
-
-```json
-{"account_id":"1001","message":"给账户1002模拟转账500元"}
-```
-
-返回的核心字段如下；`action_id` 和 `created_at` 在运行时生成：
-
-```json
-{
-  "status": "pending",
-  "message": "转账 500 元，需要用户确认，尚未执行。",
-  "risk_level": "yellow",
-  "action_id": "运行时生成的任务编号",
-  "pending_action": {
-    "action_id": "同一个任务编号",
-    "account_id": "1001",
-    "action": "transfer_money",
-    "params": {"to_account_id": "1002", "amount": "500"},
-    "risk_level": "yellow",
-    "created_at": "运行时生成的UTC时间"
-  }
-}
-```
-
-响应同时包含 Agent 的 `reply` 和已完成查询的 `tool_results`。转账参数采用原工具的账户编号和金额字符串；只有收款人姓名时仍需补充编号，不猜测账户。
-
-### 确认或取消
-
-将收到的真实任务编号填入请求。确认无需再次调用 LLM：
-
-```http
-POST /confirm
-Content-Type: application/json
-```
-
-```json
-{"account_id":"1001","action_id":"收到的真实任务编号","confirmed":true}
-```
-
-确认后原转账工具重新执行参数、账户和余额校验；成功返回 `status: completed`、`result` 和根据工具结果生成的 `reply`。工具拒绝交易时返回 `status: failed` 和原工具错误。
-
-取消请求：
-
-```http
-POST /cancel
-Content-Type: application/json
-```
-
-```json
-{"account_id":"1001","action_id":"收到的真实任务编号"}
-```
-
-也可以向 `/confirm` 发送 `confirmed: false` 取消。取消返回 `status: cancelled`，不会执行工具。未知、已消费或其他账户的任务返回 HTTP 404；非法请求参数返回 422。确认与取消接口不依赖 LLM Key。
-
-### 管理器与阶段范围
-
-`PendingActionManager(executor)` 接收服务端固定注册的执行器，提供 `prepare_action`、`create_pending_action`、`get_pending_action`、`confirm_action`、`cancel_action`。管理器独立于 LLM、HTTP 和 SQLite；保存账户、操作、参数快照、风险等级、UTC 创建时间及唯一任务编号。
-
-任务在执行前原子领取并移出待确认队列，同一个编号最多调用一次执行器。重复或并发确认不会重复扣款；领取后的操作不能再取消。执行器返回业务失败时任务也被消费；意外异常返回 `execution_unknown`，不能假定资金未变动，应先查询账单，管理器不自动重试。
-
-本阶段待确认数据只保存在**当前服务进程内存**，重启会丢失，服务请保持一个 worker。多个任务编号及固定执行器接口为后续多步骤任务、人工接管和独立红色验证流程留出扩展位置；未实现持久化、过期策略或真实身份验证。
-
-账户归属检查基于 Demo 请求中的 `account_id`，不代表已经实现登录认证。红色操作仍需后续强验证模块；不能通过 `/confirm` 放行。LLM 的工具列表没有确认或取消工具，模型自行生成的确认字段也不会被接受。
-
-V0.2.3 已在 `feature/security-v0.2` 提交，commit 为 `8a3293b`，对应标签 `v0.2.3`。
-
-已在 Windows / Python 3.14.7 下运行完整测试：新增确认流程测试 24 个、既有测试 45 个，共 **69 个全部通过**。测试使用模拟 LLM 和临时数据库，不访问真实 DeepSeek 或修改用户数据库。
-
-## 13. V0.2.4 Audit Log
-
-服务启动时在现有 `BANK_DB_PATH` 数据库中自动创建 `audit_logs` 表。`accounts`、`bills` 的结构和现有数据保留。审计事件写入后提交到 SQLite，服务重启及重新初始化数据库不会清空日志。
-
-每条事件包含 `timestamp`（SQLite 生成的 UTC 时间）、`account_id`、`user_request`、`operation`、`risk_level`、`permission_action`、`confirmation_status`、`execution_result`。尚未产生的操作、风险和权限值为 `null`，不会由模型补写。
-
-额外字段包括自增 `id`、`event_type`、`request_id`、`action_id` 和 JSON `details`。数据库建立账户/序号索引和请求/序号索引。账户字段不设置外键，以便记录不存在账户的失败请求。`AuditLogger` 只提供追加及查询接口，不提供日志修改或删除接口。
-
-记录节点包括：
-
-- `request_received`：已校验的聊天请求或账户查询进入服务；LLM 未配置或调用失败也保留初始请求。
-- `risk_evaluated`、`permission_decided`：代码计算的风险、原因和权限策略。
-- `pending_created`：待确认任务及参数快照。
-- `confirmation_confirmed`、`confirmation_cancelled`、`confirmation_rejected`：代码处理的确认、取消和拒绝结果。
-- `tool_execution_started`、`tool_executed`：执行前记录及工具返回的 `success`、`failed` 或结果不确定时的 `unknown`。
-- `request_returned`、`request_failed`：请求返回状态或服务错误。请求层事件的执行字段可为 `not_applicable`，实际工具结果以 `tool_executed` 为准。
-
-```text
-请求 → request_received → Risk Engine → risk_evaluated
-     → Permission Controller → permission_decided
-     → pending_created → confirmed / cancelled
-     → 原工具 → tool_executed
-以上事件由代码追加到同一个 SQLite 数据库
-```
-
-同一次聊天请求的决策事件共用 `request_id`。黄色任务保存原请求审计上下文，后续确认或取消继续使用原 `request_id`、`user_request` 和 `action_id`；确认接口本身的入站请求也另行记录，通过 `action_id` 关联。安全聊天和确认响应提供原流程的 `request_id`，可用于筛选完整链路。
-
-### 查询
-
-```http
-GET /audit/1001?limit=100&offset=0
-```
-
-返回结构为 `{"account_id":"1001","logs":[...],"limit":100,"offset":0}`，事件按 `id` 倒序排列。`limit` 支持 1–500，`offset` 为非负整数；可加 `request_id=实际请求编号` 筛选同一次流程。不存在历史的账户返回空数组。查询不需要 LLM Key，也不会反向生成新的审计事件。
-
-### 执行与故障边界
-
-`/chat/secure` 执行实际权限流程。本节记录的 V0.2.4 曾保留旧入口直接执行行为；本轮已移除该能力：兼容入口 `/chat` 的写操作记录为 `legacy_write_blocked`，不执行，也不生成待确认任务。历史 `legacy_bypass` 日志不会被修改或清理。
-
-关键执行前审计不可用时返回 HTTP 503，不执行工具；确认任务未被领取，恢复后仍可确认。工具已执行后若末尾审计失败，返回真实工具结果并提示 `audit_warning`，不将成功转账改为失败，也不自动重试。兼容聊天响应会在 `reply` 中显示提示。
-
-工具交易与审计事件使用独立事务。极端情况下进程在转账提交后、结果日志写入前退出，可能只保留 `tool_execution_started`；不能据此认定转账失败，应核对原账单及交易编号。本阶段未实现交易和审计的跨表原子提交。
-
-审计记录持久化，待确认任务仍遵循 V0.2.3 的进程内存生命周期；服务重启后旧日志可查询，但不能靠日志自动恢复或执行旧任务。日志包含请求文本和业务结果，不记录 SDK 配置、请求认证头或 API Key。查询接口沿用 Demo 的账户编号模式，尚未新增登录认证或日志访问权限系统。
-
-V0.2.4 已在 `feature/security-v0.2` 提交，commit 为 `0bbbf82`，对应标签 `v0.2.4`。
-
-Windows / Python 3.14.7 下新增 19 个审计测试与原有 69 个测试，共 **88 个全部通过**。覆盖创建、账户查询、完整确认链、取消/失败、独立进程及服务重启持久化、执行前后审计故障；测试只使用临时数据库与模拟 SDK。
-
-## 14. V0.3.0 比赛 Demo API
-
-本阶段只优化后端协议，没有新增前端、真实验证或登录系统。HTTP 层使用 `api/responses.py` 适配已有 Agent 结果；Risk Engine、Permission Controller 的实际判断被直接传递到响应，不解析 `reply` 或让 LLM 补写权限。Agent、DeepSeek 兼容调用、原工具和 SQLite 表结构保持不变。
-
-### 推荐调用顺序
-
-1. `POST /chat/secure` 发送 `{"account_id":"1001","message":"给账户1002转500元"}`。
-2. `pending` 且 `require_confirmation: true` 时，展示 `pending_action.params`，由用户点击确认或取消。
-3. `POST /confirm` 发送 `{"account_id":"1001","action_id":"真实任务编号"}`；或 `POST /cancel` 发送相同字段。不能重新提交金额或收款人。
-4. 用响应的 `audit_id` 查询 `GET /audit/1001?request_id=实际audit_id`，展示决策链。
-
-`audit_id` 是现有 `request_id` 的别名，表示整个操作的审计链，不是 `audit_logs.id` 单条事件序号。编号由 `AuditLogger` 的代码生成。确认和取消继续返回原操作的编号，SQLite 无需迁移。直接通过管理器创建的任务也会保存自己的审计上下文。
-
-### 安全聊天响应
-
-`POST /chat/secure` 保留 `status`、`reply`、`tool_results`、`request_id` 和 `pending_action` 等旧字段，增加统一 `message`、权限及确认标志、`audit_id`、`decisions` 和 `audit_warning`。以下为结构示例，编号及工具结果以实际返回为准。
-
-绿色查询：
-
-```json
-{
-  "status": "completed",
-  "message": "账户 1001（张三）余额：10000.00 元。",
-  "risk_level": "green",
-  "risk_reason": "查询类操作可自动执行",
-  "operation": "get_balance",
-  "permission_action": "allow",
-  "require_confirmation": false,
-  "require_verification": false,
-  "audit_id": "实际审计链编号",
-  "request_id": "实际审计链编号",
-  "tool_results": [{"tool": "get_balance", "result": {"ok": true, "balance": "10000.00"}}]
-}
-```
-
-黄色转账：
-
-```json
-{
-  "status": "pending",
-  "message": "转账 500 元，需要用户确认，尚未执行。",
-  "risk_level": "yellow",
-  "permission_action": "pending_confirmation",
-  "require_confirmation": true,
-  "require_verification": false,
-  "action_id": "服务端保存的实际任务编号",
-  "audit_id": "实际审计链编号",
-  "tool_results": []
-}
-```
-
-为兼容 V0.2 测试，红色操作继续使用 `status: require_verification`，不改名为 `blocked`，不返回 `action_id`；风险为 `red`，权限为 `require_verification`，`require_confirmation: false`、`require_verification: true`。同时返回 `error_code: VERIFICATION_REQUIRED` 和统一的 `error` 对象。此时没有执行工具，也不存在可通过 `/confirm` 放行的任务；前端应展示红色阻断状态，不能模拟验证成功。
-
-`decisions` 保存每次工具尝试的实际操作、风险等级、风险原因、权限及两种确认标志。多工具请求的顶层字段取实际决策中最高风险的一项，不把查询的 `green` 覆盖在随后转账的 `yellow` 上。决策列表通过请求上下文传递到工具线程，并在请求结束后清理，不跨请求混用。
-
-`needs_input` 表示未选择工具，此时 `decisions: []`，不编造绿色权限。为了保持旧字段约定，值为 `null` 的可选决策字段及无任务时的 `action_id` 会省略；前端将缺失字段视为尚无决策/任务。`partial` 表示已经完成部分工具，仍保留其真实结果；`execution_unknown` 表示结果待核对，不等于失败或已回滚。这些既有状态继续保留。
-
-### 确认和取消响应
-
-`POST /confirm` 成功时，`execution_result` 是原工具结果，包含交易编号、实际金额、余额及 `simulated`。保留旧 `result`、`reply`、`action`、`action_id` 和 `request_id` 供旧客户端使用，`message` 由工具结果渲染。
-
-```json
-{
-  "status": "completed",
-  "message": "模拟转账成功，实际完整文本包含账户、金额、余额和交易编号。",
-  "execution_result": {
-    "ok": true,
-    "simulated": true,
-    "transfer_id": "实际交易编号",
-    "amount": "500.00",
-    "balance": "9500.00"
-  },
-  "audit_id": "原操作的审计链编号"
-}
-```
-
-取消响应如下；`POST /confirm` 的 `confirmed: false` 使用相同结构。
-
-```json
-{
-  "status": "cancelled",
-  "message": "操作已取消，未执行。",
-  "execution_result": {},
-  "audit_id": "原操作的审计链编号"
-}
-```
-
-工具业务失败仍返回 HTTP 200 / `status: failed`，`execution_result` 保留原错误，并附加 `error_code`、`error`。结果未知仍为 `execution_unknown`，`execution_result: {}` 表示没有工具凭据，不能据此认定未扣款。确认仍原子领取任务，不调用 LLM、不重试或重复执行。
-
-### 统一错误协议
-
-HTTP 错误返回下列核心字段，并保留原 HTTP 状态码和兼容 `detail`：
-
-```json
-{
-  "status": "error",
-  "error_code": "ACTION_NOT_FOUND",
-  "message": "待确认操作不存在或不属于当前账户。"
-}
-```
-
-| 情况 | HTTP 状态 | error_code |
-| --- | --- | --- |
-| 请求字段、类型、JSON 或取值范围错误 | 422 | INVALID_ARGUMENTS |
-| 直接查询不存在账户 | 404 | ACCOUNT_NOT_FOUND |
-| 未知、已消费或其他账户的 action | 404 | ACTION_NOT_FOUND |
-| LLM 未配置 | 503 | LLM_NOT_CONFIGURED |
-| 模型网络或服务失败 | 502 | LLM_SERVICE_ERROR |
-| 初始模型调用超时 | 504 | LLM_TIMEOUT |
-| 执行前审计不可用 | 503 | AUDIT_UNAVAILABLE |
-| 未处理的服务异常 | 500 | INTERNAL_ERROR |
-
-业务阻断/失败继续保留旧 HTTP 200 和业务 `status`，其中 `error` 使用相同的 `{status:"error", error_code, message}` 核心格式。强验证未完成的代码为 `VERIFICATION_REQUIRED`；工具错误沿用 `ACCOUNT_NOT_FOUND`、`INVALID_ARGUMENTS`、`INSUFFICIENT_FUNDS` 等原代码。前端先判断 HTTP 状态，再根据业务 `status` 和 `error` 展示，不将所有 HTTP 200 当作成功。
-
-参数错误的 `detail` 仅含字段位置、原因和类型，不回显输入值；未处理异常不暴露内部诊断。执行后的审计告警以 `audit_warning` 返回，同时加入 `message`，不能覆盖已成功的工具结果或触发重新转账。旧 `/chat` 的成功响应仍只有 `status`、`reply`、`tool_results`；其原 `detail` 错误信息仍可读取。
-
-### 测试与阶段边界
-
-完整回归命令保持不变：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`。新增测试使用 MockTransport 和临时 SQLite，覆盖三种风险结构、确认/取消、统一错误、模型伪造字段、审计关联及告警、并发隔离、部分结果与旧 `/chat` 兼容。
-
-Windows / Python 3.14.7 下，原有 88 个测试与新增 22 个测试，共 **110 个全部通过**。测试不访问真实 DeepSeek，不改动运行数据库。
-
-V0.3.0 当时不含 CORS、前端、任务持久化、过期策略或真实强验证；其稳定提交现为 `7bdae47`。前端基线为 `18279af`；本轮在独立开发分支实施，未暂存、提交、合并或推送。待确认任务仍要求单 worker，重启会丢失。
-
-## 15. 第一阶段：安全加固与自然对话
-
-本轮不新增理财、卡片、订阅、代扣或工作流，不迁移数据库。FastAPI 原版本号 `0.3.0` 保留，以下为该基线上的未提交增量协议。
-
-### 执行边界
-
-- `/chat` 仅兼容余额、账单查询和非业务回复。模型请求黄色或红色转账时返回 HTTP 200 / `status: failed`，工具错误代码为 `LEGACY_WRITE_DISABLED`；余额不变，没有待确认任务，审计记录阻断。兼容成功/失败响应仍仅含 `status`、`reply`、`tool_results`。
-- `/chat/secure` 的转账仍经 Risk Engine → Permission → PendingActionManager → 原工具与审计。模型的风险、授权、确认字段无效；“我确认了”不能代替确认接口。Agent 默认执行器也只允许只读，未注册安全执行器不能直接转账。
-- 问候和帮助不向模型开放银行工具。其他工具请求仍按白名单/参数校验处理；非转账请求中幻觉产生的转账工具不会创建任务。
-- 普通回复允许受约束的模型文本。金融事实和交易结果继续由工具模板生成；涉及金融状态、完成声明或伪造字段的无工具文本会保守回退。此文本策略不是任意自然语言的形式化防幻觉保证，可能对部分正常金融解释回退，不能作为生产级语义校验器。
-
-### 响应分类
-
-`/chat/secure` 新增 `response_kind` 与 `conversation_id`。`response_kind` 为：
-
-| 类型 | 含义 |
+| 变量 | 当前代码默认值/作用 |
 | --- | --- |
-| `conversation` | 普通对话，不能当成业务成功 |
-| `capabilities` | 后端可信的现有能力与使用说明 |
-| `clarification` | 信息不足、不能用文本确认或已有待确认任务 |
-| `unsupported` | 当前未实现的业务，不生成凭据 |
-| `business_result` | 工具结果、风险暂停或业务失败，仍需判断 status、ok 等字段 |
+| `DEEPSEEK_API_KEY` | 空；未配置时可启动服务，但自然语言聊天不可用 |
+| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com/beta`，基础地址，不附加 `/chat/completions` |
+| `DEEPSEEK_MODEL` | `deepseek-flash`，模型是否可用取决于服务端及账户配置 |
+| `BANK_DB_PATH` | `database/banking.db`；相对路径基于项目根目录 |
+| `VITE_API_BASE_URL` | 前端默认 `/api`；通常无需配置，不能填写模型密钥 |
 
-普通对话可返回 `status: completed`，只表示回复完成，没有绿色风险决策和交易凭据。前端使用蓝色“对话回复/能力说明/暂不支持”区分，不把 HTTP 200 或 completed 一律渲染为金融成功。原 `needs_input` 用于澄清，而非所有无工具回复。
+这些模型地址和名称是当前项目默认配置，不是对供应商最新可用模型的保证。现有工具使用strict schema；兼容层调整发送用schema并保留本地验证，不应随意更换接口地址。服务端进程环境变量优先于.env，修改配置后须重启。没有Key时 `/health` 返回 `llm_configured: false`，聊天入口返回 `503 / LLM_NOT_CONFIGURED`；它不是联网凭据校验。
 
-### 有界会话
-
-第一次请求可省略 `conversation_id`；后续只回传服务端生成的编号：
-
-```json
-{"account_id":"1001","conversation_id":"上次返回的32位十六进制编号","message":"继续介绍一下"}
-```
-
-- 会话在当前服务进程内存保存，最多 128 个、空闲 20 分钟过期；只保留最近 6 次交流（12 条历史消息，每条请求仍最多 2000 字符）。单会话同一时刻只处理一条消息。
-- 编号与账户绑定；其他账户、未知或过期编号返回 404 / `SESSION_NOT_FOUND`。并发返回 409 / `SESSION_BUSY`，容量达到上限返回 429 / `SESSION_LIMIT`。不自动重发。
-- 客户端不能上传历史、system 消息、金融结果或授权字段。历史只保存用户文本及受控回复/业务状态摘要，不保存工具消息、余额、账单和交易凭据。用户历史也只是未经信任的交流背景，不是账本。查询始终需要新工具结果。
-- 同一会话已有待确认任务时，仍可聊天和查询，但新转账不会创建第二笔任务或替换原参数。“确认/取消”始终绑定原 action_id 和原 audit_id。
-- 会话过期不自动取消或执行原任务；前端处理原任务后可点“新对话”。重启会丢失会话和待确认任务，持久化审计保留；不提供自动恢复/执行。
-- 浏览器刷新暂不恢复状态；仍没有真实登录认证，账户隔离不等于可信身份认证。请保持单 worker、本地演示使用。
-
-### 前端与回归
-
-前端分别保存当前会话、最近业务决策、原待确认决策/参数与执行结果。新聊天不覆盖待确认任务；原任务风险卡保留原审计入口。交易后强制启动新的余额/账单读取，较早的读取不能覆盖较新结果。确定性的 LLM 服务错误正常展示，不伪造成功或自动重试。
-
-后端回归使用临时数据库及 MockTransport，前端运行 `npm test`、`npm run build`。不要使用当前演示数据库测试转账；不要将模拟模型测试描述为真实 DeepSeek 联网验证。
-
-## 16. 第一阶段人工验收缺陷修复（待完整回归）
-
-本次修改基于本地 checkpoint `27ef631`，尚未提交。保持 `tool_choice="auto"`、原风险阈值和确认流程，不新增业务场景。
-
-- `transfer_money` 的模型描述明确为提交服务端安全评估。明确的 500 元和 5000 元请求进入同一个执行器，分别由原 Risk Engine / PermissionController 返回黄色待确认和红色强验证阻断，不能由模型自行生成风险结论。
-- 仅当模型正常结束（`finish_reason: stop`）、没有工具调用且本轮尚无工具结果时，才尝试有限兜底。完整匹配“给账户1002转5000元”“请从账户1001向账户1002转账5000元”这类单笔命令；兜底只构建参数，继续调用注册的执行器。旧 `/chat` 和独立 Agent 默认执行器仍禁止写入。
-- 兜底不从历史或模型文本补参数，不删除小数点、引号或数字内部空格。否定、假设、引用、历史、未来、条件、多笔、账户不一致及歧义请求安全澄清。已有待确认任务不能替换。模型参数还须与用户原文一致，防止凭空补齐收款人、替换金额或切换转出账户。
-- “你能干嘛”等能力问句使用可信能力说明。明确的余额/最近账单查询也可以有限兜底，默认账单 10 条、最多 100 条，数据始终由真实工具查询；不把最近账单解释为完整月份或消费统计。
-- 未识别的完整表达会说明尚未取得工具结果，不统一声称缺少转账参数。真正缺参、意图拒绝、账户不符和已有任务分别澄清。有限语法以外的表述可能仍需用户改述；此解析器不保证任意自然语言的完整语义识别。
-- 网络/模型异常、空 choices、截断或拒绝响应、未知/多工具调用、参数错误、已有工具结果、执行结果未知均不能触发新的兜底或自动重试。
-
-`/chat/secure` 增加向后兼容的 `diagnostic_codes: string[]`。前端原有字段与状态不变，不需要使用该数组才能正常展示。`request_returned.details.diagnostic_codes` 保存同一数组；模型异常在 `request_failed.details.diagnostic_code` 中记录。仅记录代码生成的原因码，不保存完整模型响应、认证信息或额外账户数据。它们不替代 `risk_evaluated`、`permission_decided` 或执行审计。
-
-常见代码：`MODEL_NO_TOOL_CALL`、`TRANSFER_FALLBACK`、`READ_FALLBACK`、`MISSING_PARAMETERS`、`INTENT_REJECTED`、`ACCOUNT_MISMATCH`、`PENDING_EXISTS`、`TOOL_ARGUMENTS_INVALID`、`MODEL_CALL_ERROR`、`MODEL_TIMEOUT`、`MODEL_ERROR`、`EXECUTION_UNKNOWN`。`TRANSFER_FALLBACK` 表示识别路径，不能单独作为任务已创建或交易成功的凭据；必须结合实际状态和风险/权限审计。正常工具查询后的模型结束不标记为首次未调用工具。
-
-新增 `tests/test_intent_routing.py`，覆盖纯解析、安全执行器和审计、模拟模型下的 API 及默认只读执行器。新增转账识别测试拦截资金工具并断言调用次数为零，不调用确认接口。原有失败审计测试改为由用户显式提供不存在的收款账户，避免测试依赖模型猜测缺失参数。
-
-Codex 沙箱已知存在 asyncio 初始化阻塞，不为此改动业务异步代码。可在该环境执行同步检查：
+仅首次在前端目录使用现有锁文件安装依赖：
 
 ```powershell
-.\.venv\Scripts\python.exe -B -m unittest tests.test_intent_routing.IntentParserTests tests.test_intent_routing.SafeDecisionTests tests.test_risk_engine tests.test_permission tests.test_conversation.SessionTests tests.test_confirmation.PendingActionTests -v
+Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI\frontend'
+npm.cmd ci
 ```
 
-完整后端回归请在本机新的 PowerShell 终端、项目根目录执行（只设置当前终端环境，测试使用模拟模型和各自临时数据库）：
+数据库、.env、.venv、node_modules、缓存和dist不随Git分发。代码恢复或克隆不会自动恢复运行数据、凭据、会话或待确认任务。
+
+## 4. Windows PowerShell启动：先选择数据库
+
+**普通运行与跨场景演示使用相同代码，区别是服务进程的 `BANK_DB_PATH`。没有独立的“演示模式”开关。每次只选择下面一种后端启动方式，占用8000端口。**
+
+| 用途 | 数据库 | 样本与影响 |
+| --- | --- | --- |
+| 普通运行 | `database/banking.db`，或用户明确选择的普通库 | 基础账户/转账账本与审计；不会自动导入消费和卡片 |
+| 跨场景演示 | `.cache/cross-scenario-demo/banking.db` | 独立消费/银行卡样本及调查报告；不使用普通库 |
+| 旧阶段演示 | `.cache/bill-analysis-demo/banking.db`、`.cache/card-management-demo/banking.db` | 保留已有状态，不用作本轮初始化目标 |
+
+服务启动会在所选库建立缺少的基础表、调查元数据表及缺少的Demo账户；不会重置已有余额。新建基础库的1001/1002初始余额分别为10000.00/5000.00元，**现有库余额必须查询，不能沿用初始值**。普通查询通常也会写审计；只读调查仅保证业务数据不变，仍会写审计和快照。
+
+### A. 普通运行后端（明确使用普通库）
+
+普通运行会使用 `database/banking.db`，运行期间业务和审计都落在该库。以下命令会覆盖本次服务进程从.env读取的数据库选择；如果希望避免影响普通数据库，请使用下方“B. 跨场景演示后端”的独立演示数据库启动方式。
+
+在终端A执行：
 
 ```powershell
-$bankingTestTemp = Join-Path (Get-Location).Path ('.cache\regression-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $bankingTestTemp -ErrorAction Stop | Out-Null
-$env:TEMP = $bankingTestTemp
-$env:TMP = $bankingTestTemp
-$env:TMPDIR = $bankingTestTemp
-$env:BANK_DB_PATH = Join-Path $bankingTestTemp 'fallback-test.db'
-$env:DEEPSEEK_API_KEY = ''
-.\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
+Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+$bankRunDb = Join-Path (Get-Location).Path 'database\banking.db'
+$bankPreviousDb = $env:BANK_DB_PATH
+try {
+    $env:BANK_DB_PATH = $bankRunDb
+    Write-Host "本次普通运行数据库：$env:BANK_DB_PATH"
+    .\.venv\Scripts\python.exe -B -m uvicorn main:app --host 127.0.0.1 --port 8000
+} finally {
+    $env:BANK_DB_PATH = $bankPreviousDb
+}
 ```
 
-原 133 项基线通过来自用户本机报告，不代表本次修改后的 162 项已全部通过。同步检查、完整后端回归、真实 DeepSeek 联网和浏览器验收须分别记录。
+### B. 跨场景演示后端（使用已有独立库）
 
-## 17. 基础自然对话定向修复（待本机完整回归与人工验收）
+在终端A执行。路径不存在即停止；不要去掉检查后让SQLite创建空库，也不要为重现截图重导样本、重置余额或篡改卡片状态。
 
-上一轮 162/162 项后端通过来自用户本机 PowerShell；本节是在该工作区上的进一步未提交修改，不把旧结果记作新代码全部通过。
-
-- 输入侧按查询/操作语法、显式参数和咨询语法决定是否提供业务工具。没有业务请求证据的消息默认按对话处理，带账户和金额的规则咨询也不等于发出操作。没有为“真的吗”“为什么”等逐一建立回复模板。重复查询仍允许使用工具；普通回应不继承历史转账意图。工具资格只影响路由，不能授权执行。
-- 输出侧由 `agent/text_policy.py` 审查无工具文本，金融术语本身不再触发拒绝。正常能力说明、非数值规则解释、概念和上下文回答尽量保留模型原文；具体余额、账单数值、执行完成、资金到账、权限通过、卡片状态和结构化凭据保守拦截。含金额的风险规则使用原 Risk Engine 阈值生成可信说明，不照抄模型数值，也不生成风险/权限决策。
-- `text_response()` 区分正常对话、缺少业务结果、确实缺参、不可验证声明及空回复。空/过长的普通对话回复明确失败，不要求补转账参数。新增 `MODEL_EMPTY_TEXT`、`MODEL_TEXT_TOO_LONG`、`BUSINESS_RESULT_UNAVAILABLE`、`UNVERIFIED_FINANCIAL_CLAIM`、`UNSUPPORTED_CAPABILITY_CLAIM`、`FINANCIAL_TEXT_UNVERIFIED`、`TRUSTED_POLICY_EXPLANATION` 等代码，沿用现有诊断字段和审计，不记录原始模型响应。
-- 继续使用 SessionStore：模型获得服务端保存的用户和受控助手历史；业务结果只保存状态摘要，不能从历史恢复账本或授权。前端仍传递同一 `conversation_id`，原账户隔离、过期、待确认任务保护以及旧接口/默认执行器限制不变。没有修改 Risk Engine、PermissionController、确认/取消或资金工具。
-
-新增 `tests/test_basic_dialogue.py` 共 18 项测试（包含多组子用例），覆盖不同上下文/回复、能力追问、规则咨询、伪造金融事实与凭据、纯聊天中的幻觉工具、空回复与网络错误、历史与账户隔离、待确认任务保护及查询后追问。API 测试使用 MockTransport 与临时数据库，断言资金执行调用为零；会话追问还检查工具调用和实际风险审计没有被伪造。
-
-本次已执行同步后端回归 68/68、前端 11/11、TypeScript + Vite 构建及 Python AST 检查。完整测试静态发现为 180 项，尚未在 Codex 环境执行；请在本机按上一节独立临时目录的 PowerShell 命令运行完整回归。未进行真实 DeepSeek 联网或浏览器验收。
-
-文本审查仍是保守的规则防线，不是任意语言的语义证明；少见隐喻、混合语句及正常的数值解释可能回退，复杂业务表达也可能需要改述。执行安全继续由原服务端链路保证，不能把自由文本、对话完成状态或诊断代码当作账户事实、交易凭据或授权。
-
-## 18. 日累计转账风险与确认事务
-
-本 Demo 自行采用 **Asia/Shanghai 北京时间业务日**（现代北京时间 UTC+08:00，以标准库固定偏移实现，不依赖 Windows 时区数据包），这不是对官方指定时区的声明。以转出账户为单位计算：当前业务日已成功提交的转出金额 + 本笔拟转账金额。正数累计不超过 1000 元为黄色、需要风险卡确认；超过 1000 元为红色、需要强验证。当前没有强验证放行能力，拆分多笔不能突破累计限制。
-
-`security/daily_limit.py` 将北京时间零点转换为 UTC 左闭右开区间，直接对整个 `bills` 表中该账户的 `transfer_out.amount_cents` 求和，不调用最多 100 条的账单展示接口。初始入账、转入、待确认、取消及回滚交易不计入；实际已提交的转出即使后续审计或响应异常仍计入。金额使用整数分与 Decimal。查询、时间或事务异常不按零处理、不自动重试；异常账本记录保守阻断。没有新增累计表或迁移现有演示数据库。
-
-创建任务由 `assess_operation` 预评估。生产注册的风险预评估读取账本；独立管理器仍可注入无数据库的模拟评估器，但这不产生实际资金执行权限。最终确认路径为：
-
-```text
-正式确认 → 原子领取任务 → 绑定账户/收款人/金额的一次性服务端许可
-→ transfer_money → BEGIN IMMEDIATE
-→ 取业务时间 → 全量累计查询 → RiskEngine → PermissionController
-→ 同连接写入最终风险/权限审计
-→ 黄色且具有已确认许可：余额更新及双方账单 → 提交
-→ 红色：只提交阻断审计，不扣款，不产生新可确认任务
+```powershell
+Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+$bankDemoDb = (Resolve-Path -LiteralPath '.cache\cross-scenario-demo\banking.db' -ErrorAction Stop).Path
+if (-not (Test-Path -LiteralPath $bankDemoDb -PathType Leaf)) {
+    throw '独立演示数据库不存在或不是文件，停止启动。'
+}
+$bankPreviousDb = $env:BANK_DB_PATH
+try {
+    $env:BANK_DB_PATH = $bankDemoDb
+    Write-Host "本次独立演示数据库：$env:BANK_DB_PATH"
+    .\.venv\Scripts\python.exe -B -m uvicorn main:app --host 127.0.0.1 --port 8000
+} finally {
+    $env:BANK_DB_PATH = $bankPreviousDb
+}
 ```
 
-业务日归属采用取得写锁后统一采样的执行时间；风险判断及双方账单使用同一时间。不同任务并发确认时，后取得 SQLite 写锁的任务必须看到前一笔已提交账本并重新判断。内存任务锁仅防止同一 action_id 重复领取；累计正确性依靠 SQLite 资金事务，而不是会话锁或内存计数。待确认任务仍仅支持单 worker、重启丢失；账本累计重启后保留。
+以上只临时修改当前进程环境，退出后恢复，不修改.env或系统配置。保持**单worker，不使用 `--reload`**；重载会丢失内存会话和待确认任务。
 
-服务端许可通过进程内 ContextVar 传递，只在已领取正式确认任务后建立，绑定完整参数并只能消费一次；不是客户端字段、不是强验证凭据。直接调用 `transfer_money`、`execute_tool` 或 `execute_saved_action` 而没有该许可不能写资金。原默认执行器仍只读，旧 `/chat` 继续拒绝写入；模型工具 schema 不接收累计金额、业务时间或确认许可。Python 进程内代码与数据库写权限仍属于可信边界，不是对任意本机代码的沙箱。
+独立库不存在时，不要启动普通库替代比赛演示：
 
-`AuditLogger.log_event(..., db_connection=conn)` 允许最终风险与权限审计复用资金事务连接，避免写锁内另开连接。原 `tool_execution_started` 表示安全执行器开始复核（`stage: confirmation_gate`），不代表资金已扣除。确认时新增 `stage: confirmation` 的风险和权限事件及真实累计快照；风险升级后的 `tool_executed.execution_result` 为 `not_executed`。资金提交后单独写执行结果审计，失败沿用 `audit_warning`，不会重做交易。写入/提交期间异常保守返回 `execution_unknown`，不能宣称已回滚或未扣款；请核对账单。
+- 若已有银行卡演示库并需要保留其状态，按[独立演示说明](docs/INVESTIGATION_DEMO.md)的只读检查及拒绝覆盖的SQLite backup步骤创建新副本；不能复制正在变化的数据库主文件冒充一致备份。
+- 若是全新克隆且没有任何演示库，可由用户明确执行下面的**首次离线初始化**。目标必须尚不存在，不能指向.env/当前进程选中的数据库；不要在服务启动、聊天或普通查询中调用它。
 
-`/confirm` 增加 `status: require_verification`，并通过可选的 `decision` 返回本次最新服务端决策；原 action_id/audit_id 关联保留。原黄色任务已消费，不能再次确认。前端收到最新决策后清除待确认按钮，风险面板改为红色，不能继续显示旧黄色授权。其他普通查询、聊天及取消协议不变。规则提示词与可信说明同步采用日累计口径，没有继续优化闲聊。
+```powershell
+Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+if (Test-Path -LiteralPath '.cache\cross-scenario-demo\banking.db') {
+    throw '目标已存在，禁止覆盖或重新初始化；请使用已有库。'
+}
+.\.venv\Scripts\python.exe -B -m card_management.sample --database .cache\cross-scenario-demo\banking.db
+if ($LASTEXITCODE -ne 0) { throw '离线初始化失败，保留现场，不删除或重建数据库。' }
+```
 
-新增 `tests/test_daily_limit.py`，包含同步纯规则/真实临时 SQLite 事务及模拟模型 API 测试。覆盖阈值、拆分、同账户并发、跨日和写锁等待跨日、取消/失败/回滚、提交后审计/响应失败、超过 100 条账单、账户隔离、重启、一次性许可和审计同连接。资金写入 spy 检查实际调用次数。原余额并发测试改用日累计阈值内的隔离余额场景，继续验证防止超扣；原超额余额测试按更早触发的累计强验证规则调整，并由新增测试单独验证余额不足。
+该CLI会为新独立库创建基础账户、消费样本、卡片及映射。新样本的生活卡A初始为正常状态、版本0；此前人工验收库的“已冻结、版本3”是实际历史状态，不能要求新库凭空具有同样状态。初始化不是挂失/强验证执行，也不会恢复旧调查报告。
 
-完整回归仍需在本机 PowerShell 使用第 16 节独立 `.cache` 临时目录命令运行；Codex 不为已知 asyncio 初始化阻塞改写业务异步代码。模拟模型/临时账本测试不能视为真实 DeepSeek 或浏览器验收。
+### 启动前端与访问页面
 
-本轮新增后端 29 项（同步 27 项、API 2 项）和前端 2 项测试。Codex 已运行同步后端 121/121、前端 13/13、TypeScript/Vite 构建和静态检查；完整后端静态发现为 228 项，尚待本机完整回归。前端凭据组件对强验证阻断单独展示红色提示，只有 completed、工具 ok=true 与有效交易编号同时成立才显示转账凭据。
+另开终端B，使用已有依赖：
+
+```powershell
+Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI\frontend'
+npm.cmd run dev
+```
+
+- 主页面：[http://127.0.0.1:5173/#/home](http://127.0.0.1:5173/#/home)
+- AI对话及历史调查：[http://127.0.0.1:5173/#/chat](http://127.0.0.1:5173/#/chat)
+- 账单分析：`http://127.0.0.1:5173/#/analysis`
+- 银行卡管理：`http://127.0.0.1:5173/#/cards`
+- 风险确认：`http://127.0.0.1:5173/#/risk`；审计：`http://127.0.0.1:5173/#/audit`
+- 后端健康检查：[http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+- Swagger：[http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+
+Vite将 `/api/*` 代理到 `http://127.0.0.1:8000/*` 并去掉 `/api` 前缀。**不要直接双击dist/index.html或把前端URL改为8000端口。**
+
+停止服务：分别在终端B、终端A按 **Ctrl+C**，等待退出和后端finally恢复环境变量；浏览器关页不会停止服务。先等当前请求返回；有待确认任务时先明确处理或记录状态。重启不能用来推断未知写操作未执行，也不能以刷新解除安全限制。
+
+构建预览（不是必需启动步骤）：
+
+```powershell
+Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI\frontend'
+npm.cmd run build
+npm.cmd run preview
+```
+
+预览地址为 `http://127.0.0.1:4173/#/chat`，仍需单独运行后端。生产部署需配置同等 `/api` 反向代理；本项目尚未实现生产部署和跨域认证方案。
+
+## 5. 使用与数据口径
+
+页面可在1001/1002模拟账户间切换；不得把可选择account_id当作真实身份认证。推荐先在独立演示环境尝试只读指令：
+
+- “你能做什么？”
+- “查询账户1001的当前余额。”
+- “帮我查询一下我名下有哪些银行卡，以及它们目前的状态。”
+- “分析一下我2026年10月的消费。”
+- “比较2026年9月和10月前20天的消费。”
+- “帮我调查2026年10月有没有可疑消费，特别是重复扣款。”
+- “检查2026年10月的大额消费，并看看关联的是哪些银行卡。”
+
+自然语言请求统一使用 `POST /chat/secure`。服务器返回 `conversation_id`，后续消息回传同一编号。模型/API可用性、表述和数据是否存在仍影响结果，不保证任意自然语言均能识别。
+
+待确认转账和卡片操作必须在风险面板点击正式“确认执行”或“取消”。普通“好的”“确认了”不能执行；确认成功分别展示真实 `transfer_id` 或 `card_operation` 凭据。卡片确认/取消须携带原账户、会话和action_id，不能修改原参数。红色 `require_verification` 没有放行按钮，不能通过 `/confirm` 绕过。
+
+### 消费样本与异常规则
+
+**模拟消费分析样本，不参与当前账户余额核算。** 不将银行转账自动归类为餐饮/购物，不混合来源生成总消费。统计使用完整匹配记录，分页仅影响明细，金额由Python确定性计算。
+
+账户1001的固定样本核对值（不是全部真实消费）：
+
+| 口径 | 笔数/金额 |
+| --- | --- |
+| 2026年9月 | 8笔，2140.49元 |
+| 2026年10月1—20日 | 10笔，2737.01元 |
+| 两月前20天同期比较 | 2016.49元 → 2737.01元；增加720.52元，35.73% |
+
+时间使用UTC存储，按北京时间解释；范围内部左闭右开。10月样本覆盖截至20日，未覆盖日期不能当作零消费，不能生成“10月完整消费”结论。
+
+- `LARGE_PURCHASE_V1`：单条消费≥1000元，提示核对用途；与转账授权阈值是不同规则。
+- `SIMILAR_PAYMENT_V1`：同商户、同金额的相邻消费间隔≤300秒，提示核对。
+- `oct20-a`、`oct20-b`各88.00元、相隔2分钟，可信映射关联模拟生活卡A、尾号0101；卡片当前状态必须查询，不能硬编码。
+- **规则命中不代表已确认盗刷或重复扣款。** 退款/撤销等类型暂不支持，商户、分类和映射来自固定数据，不由LLM补造。
+
+### 调查规划、证据与恢复
+
+调查只允许 `analyze_spending`、`get_spending_record`、`get_card_for_spending_record`、`get_card`。记录ID来自本次真实异常，卡片ID来自已核验映射，模型只能选择服务端提供的就绪step_id，不能提交SQL、任意ID、风险或写操作。最多6条原始记录、20次业务只读工具尝试；模型选择另有20次预算。
+
+| 字段 | 含义 |
+| --- | --- |
+| `planner_mode` | `model_planned`：真实合法模型选择；`deterministic_fallback`：失败后确定性降级；`deterministic_no_choice`：没有需要模型选择的分支 |
+| `planning.events` | 模型计划选择记录，接受计划不代表步骤成功 |
+| `steps` | 实际执行的依赖、工具、状态、证据和审计 |
+| `execution_status` | 执行状态，与数据是否完整独立 |
+| `coverage_status` | 数据覆盖状态；可以执行completed而覆盖incomplete |
+| `investigation_id` | 已保存报告标识，不是金融操作授权 |
+
+聊天页“历史调查”读取当前账户最近20份报告。打开带调查ID的历史链接后刷新，只查询已保存快照，不调用模型或重新调查；明确的新调查请求才生成新ID。旧卡片状态是带读取时间的历史快照，“查询最新卡片状态”独立查询并单独显示。调查不会自动冻结或创建待确认任务，历史恢复也不恢复许可。
+
+## 6. 主要API
+
+所有业务结果以结构化状态和真实工具结果为准，不能把HTTP 200、普通对话completed或模型文案当作金融成功。
+
+| 方法与路径 | 用途 |
+| --- | --- |
+| `GET /health` | 服务及LLM是否配置，不调用模型 |
+| `POST /chat/secure` | 统一自然语言、受限调查及安全任务入口 |
+| `POST /confirm`、`POST /cancel` | 处理已有任务，确认/取消不调用LLM |
+| `GET /accounts/{account_id}/balance`、`/bills` | 余额、最近1—100条账单 |
+| `GET /accounts/{account_id}/bill-analysis` | 消费摘要及同期比较 |
+| `GET /accounts/{account_id}/analysis-records` | 原始明细分页，或按record_id查询 |
+| `GET /accounts/{account_id}/cards`、`/cards/{card_id}` | 模拟卡片列表、详情 |
+| `GET /accounts/{account_id}/analysis-records/{record_id}/card` | 可信消费关联卡片 |
+| `GET /accounts/{account_id}/card-operations/{action_id}` | 只读核对卡片操作持久化凭据 |
+| `GET /accounts/{account_id}/investigations` | 已保存调查列表，不重跑 |
+| `GET /accounts/{account_id}/investigations/{investigation_id}` | 已保存调查详情，不重新读取业务证据 |
+| `GET /audit/{account_id}` | 按request_id筛选审计，支持limit/offset |
+| `POST /chat` | 无会话的旧只读/普通对话兼容入口，禁止业务写入 |
+
+除了自然语言聊天外，上述GET及确认/取消不要求模型调用；无样本时对应数据接口明确失败，不自动填充数据。参数范围见Swagger及各阶段文档。`audit_id`是请求审计链编号，单条审计事件另有id；确认流程还通过action_id关联。
+
+`needs_input`用于真实澄清，不等于一切“模型未调用工具”。`execution_unknown`或写请求通信中断时，不自动重发，应核对账单、卡片操作凭据及审计；`audit_warning`不能推翻已提交结果。`SESSION_NOT_FOUND`须在安全处理原任务后开始新对话，不能自动重试原业务。
+
+## 7. 测试与验证记录
+
+稳定提交的完整回归于 **2026-10-23** 实际执行并通过，详见[正式存档](docs/PROJECT_ARCHIVE_2026-10-23.md)：
+
+| 检查 | 已记录结果 |
+| --- | --- |
+| 后端完整unittest | 539通过，0失败、0错误、0跳过；79.550秒 |
+| 前端完整测试 | 93通过，0失败、0跳过 |
+| TypeScript `tsc --noEmit` | 通过 |
+| Vite生产构建 | 通过 |
+| `git diff --check` | 通过 |
+
+后端使用独立临时SQLite和模拟模型/SDK，前端使用模拟fetch、React静态渲染与共享状态控制器。它们不等同于真实模型或浏览器端到端验收。用户另行完成真实DeepSeek规划（4次PLAN_ACCEPTED）、异常证据、卡片关联、覆盖不足、历史恢复及无自动处置的浏览器验收。**本次README更新不重新执行完整回归、不调用真实模型，仅检查文档与源码/存档一致性。**
+
+完整后端回归：在单独终端执行，临时变量只作用于进程并在finally恢复。新建独立测试目录；不使用演示库测试写操作。
+
+```powershell
+Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+$bankTestRoot = Join-Path (Get-Location).Path ('.cache\readme-regression-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $bankTestRoot -ErrorAction Stop | Out-Null
+$bankTestPrevious = @{}
+foreach ($name in @('TEMP', 'TMP', 'TMPDIR', 'BANK_DB_PATH', 'DEEPSEEK_API_KEY')) {
+    $bankTestPrevious[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+}
+try {
+    $env:TEMP = $bankTestRoot
+    $env:TMP = $bankTestRoot
+    $env:TMPDIR = $bankTestRoot
+    $env:BANK_DB_PATH = Join-Path $bankTestRoot 'fallback-test.db'
+    $env:DEEPSEEK_API_KEY = 'offline-test-placeholder'
+    .\.venv\Scripts\python.exe -B -m unittest discover -s tests -v
+    if ($LASTEXITCODE -ne 0) { throw '后端回归未通过，请保留错误信息。' }
+} finally {
+    foreach ($name in $bankTestPrevious.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $bankTestPrevious[$name], 'Process')
+    }
+}
+```
+
+前端回归及生产构建：
+
+```powershell
+Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI\frontend'
+npm.cmd test
+if ($LASTEXITCODE -ne 0) { throw '前端测试未通过。' }
+.\node_modules\.bin\tsc.cmd --noEmit
+if ($LASTEXITCODE -ne 0) { throw 'TypeScript检查未通过。' }
+npm.cmd run build
+if ($LASTEXITCODE -ne 0) { throw '生产构建未通过。' }
+```
+
+`npm.cmd run build`本身也执行TypeScript检查。测试日志、临时目录和构建产物不进入Git，不删除失败现场或削弱测试断言。
+
+## 8. 常见启动问题
+
+| 现象 | 检查与处理 |
+| --- | --- |
+| 找不到 `main`、`requirements.txt` 或.venv | 后端必须位于项目根目录；前端命令位于frontend目录，按上文先Set-Location |
+| PowerShell阻止 `npm.ps1` 或激活脚本 | 使用 `npm.cmd` 和 `.\.venv\Scripts\python.exe`，不需要激活虚拟环境或修改系统执行策略 |
+| node/npm不存在或不支持strip-types | 检查 `node --version`、`npm.cmd --version` 与PATH；复用满足要求的环境，不用改依赖锁文件解决 |
+| 8000或5173被占用 | 在旧服务终端Ctrl+C停止已确认的本项目服务；可用 `Get-NetTCPConnection -State Listen -LocalPort 8000,5173` 查询，不能任意结束未知进程 |
+| 前端提示无法连接、`/api` 502或返回非JSON | 确认后端8000和前端5173都在运行，检查两个终端日志与Vite代理；不要将API base改成未经配置CORS的跨域地址 |
+| 自然语言503或模型502/504 | 先看 `/health` 和错误码；检查服务端Key/模型/基础地址及网络，重启加载配置；不打印Key、不反复重发写请求 |
+| 普通库没有消费、卡片或数据集 | 普通启动只建基础库。核对启动日志中的BANK_DB_PATH，使用正确的独立演示库，不向普通库自动导入 |
+| SQLite无法打开、权限或锁错误 | 确认显式路径、父目录权限、磁盘及旧进程；演示路径必须存在，停止并保留错误，不管理员绕过、不删库、不改余额 |
+| 测试临时目录权限失败 | 用上文独立.cache测试目录及进程级TEMP/TMP/TMPDIR，确认可写；不能用业务库代替临时库 |
+| 会话丢失、任务过期或卡片版本冲突 | 核对服务是否重启、空闲是否超过20分钟、卡片任务是否超过5分钟；查询状态后重新发起，不自动确认或重发 |
+| 10月整月显示覆盖不足 | 正常样本边界：仅有1—20日；不能补造数据或将21—31日当零消费 |
+| 历史报告不能恢复 | 检查是否选中同一数据库和账户；快照保存失败或库被换掉时不能保证恢复，不把GET改为隐式重新调查 |
+
+## 9. 已知限制
+
+- 模拟账户选择与会话隔离不是登录/持卡人认证；无短信、人脸、U盾等强验证放行，正式挂失/解挂不执行。
+- 自然语言、上下文解释和文本安全规则仍可能误判；不是通用聊天机器人。实际金融数据、风险和授权必须由服务端工具与状态提供。
+- 卡片冻结只改变模拟状态，不阻断真实支付；异常命中仅是调查线索，不是欺诈结论。
+- 消费仅覆盖明确模拟样本；退款、撤销、理财、订阅/代扣管理尚未实现。
+- 会话最多128个、空闲20分钟、最近6轮；会话和待确认任务在进程内存中，重启丢失。页面切换保留当前任务，刷新不会恢复其授权。
+- 调查快照可持久化恢复，但没有后台断点续跑、多worker/多实例恢复、分布式任务租约或生产级保留策略；中断不伪装完成。
+- 不支持自动金融处置、任意自由工具编排、SSE/WebSocket或生产级身份/部署体系。调查历史与恢复不解除未知写结果限制。
+
+## 10. 进一步阅读
+
+- [正式项目存档](docs/PROJECT_ARCHIVE_2026-10-23.md)：四阶段成果、实际测试与人工验收。
+- [账单分析](docs/BILL_ANALYSIS.md)：独立样本、统计口径、API与覆盖边界。
+- [银行卡管理](docs/CARD_MANAGEMENT.md)、[银行卡前端验收](docs/CARD_FRONTEND_ACCEPTANCE.md)：状态、许可、确认及操作凭据。
+- [调查核心](docs/INVESTIGATION_CORE.md)、[受限模型规划与API](docs/INVESTIGATION_AGENT.md)、[调查演示与恢复](docs/INVESTIGATION_DEMO.md)。
+- [开发规则](AGENTS.md)：文件安全与Git约束；其中早期V0.2分支说明是历史约定，当前分支以实际Git及用户任务要求为准。
+
+阶段文档可能保留开发时“待验收”“未提交”描述，应结合存档和当前代码阅读，不能把历史测试记录当作当前新增验证。
