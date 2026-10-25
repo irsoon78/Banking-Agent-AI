@@ -1,5 +1,7 @@
 # 第四阶段第二批：受限规划、Agent接入与持久化查询
 
+> 历史记录说明：本文保留阶段开发时的测试数量、待验收及未提交状态，不代表v0.4.1的发布结果。当前部署见[根README](../README.md)，本次实测见[发布说明](RELEASE_NOTES_v0.4.1.md)。命令中的`<项目根目录>`须替换为实际解压/克隆目录。
+
 本批在第一批确定性核心上增加独立调查模式。没有前端调查页面、后台续跑或自动处置，没有修改资金及卡片执行权限。模型仅选择合法步骤；金额、规则、原记录、关联卡片及状态仍由原Python工具返回。当前账户是Demo上下文，不是生产级持卡人身份认证。
 
 ## 调用入口与范围
@@ -99,7 +101,7 @@ SecureChatResponse新增以下可选字段（原转账、卡片字段不变）�
 本机完整回归（仅改变当前PowerShell进程临时目录，结束恢复；不安装依赖）：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+Set-Location '<项目根目录>'
 $invTemp = Join-Path (Get-Location) '.cache\investigation-tests'
 New-Item -ItemType Directory -Force -Path $invTemp | Out-Null
 $oldTemp, $oldTmp, $oldTmpdir = $env:TEMP, $env:TMP, $env:TMPDIR

@@ -1,5 +1,7 @@
 # 第四阶段第一批：可信只读调查核心
 
+> 历史记录说明：本文保留阶段开发时的测试数量、待验收及未提交状态，不代表v0.4.1的发布结果。当前部署见[根README](../README.md)，本次实测见[发布说明](RELEASE_NOTES_v0.4.1.md)。命令中的`<项目根目录>`须替换为实际解压/克隆目录。
+
 本批只有确定性Python调查核心、内存证据、步骤契约和测试。没有接入模型、HTTP、前端或持久化调度。`orchestration=deterministic`，不能将本批称为已实现模型自主规划。
 
 调查只读取业务表；必要审计会写入当前配置数据库的既有`audit_logs`。不创建消费样本、银行卡、黄色任务或操作凭据，不修改余额、账本、卡片、消费记录及原风险策略。不要把调用本核心当成完全不写任何文件的源码检查。
@@ -103,7 +105,7 @@ snapshot和命令是独立副本；修改返回JSON不能修改私有可信状�
 在项目根目录运行完整本机回归；仅临时改变当前PowerShell进程中的临时目录变量，退出后恢复，不安装依赖：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+Set-Location '<项目根目录>'
 $invTestTemp = Join-Path (Get-Location) '.cache\investigation-tests'
 New-Item -ItemType Directory -Force -Path $invTestTemp | Out-Null
 $invOldTemp = $env:TEMP

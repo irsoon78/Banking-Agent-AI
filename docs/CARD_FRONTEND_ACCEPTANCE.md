@@ -1,5 +1,7 @@
 # 银行卡前端接入与人工验收
 
+> 历史记录说明：本文保留阶段开发时的测试数量、待验收及未提交状态，不代表v0.4.1的发布结果。当前部署见[根README](../README.md)，本次实测见[发布说明](RELEASE_NOTES_v0.4.1.md)。命令中的`<项目根目录>`须替换为实际解压/克隆目录。
+
 第三批只增加前端接入、测试及本文档。后端代码和现有数据库没有改动。页面展示模拟银行卡，临时状态不控制真实支付，不影响模拟转账余额或历史消费。账户选择不是生产登录认证。
 
 ## 页面与接口
@@ -33,7 +35,7 @@ PendingAction采用区分联合：转账参数只包含收款账户和金额；�
 不要重新初始化现有演示库。后端PowerShell窗口：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+Set-Location '<项目根目录>'
 $cardDemoDb = Join-Path (Get-Location) '.cache\card-management-demo\banking.db'
 if (-not (Test-Path -LiteralPath $cardDemoDb -PathType Leaf)) {
     throw '独立银行卡演示库不存在；请停止并核对，不能改用正式数据库。'
@@ -50,7 +52,7 @@ try {
 前端另一个PowerShell窗口（复用现有依赖，不运行安装）：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI\frontend'
+Set-Location '<项目根目录>\frontend'
 npm.cmd run dev
 ```
 
@@ -82,7 +84,7 @@ npm.cmd run dev
 ## 自动化命令
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI\frontend'
+Set-Location '<项目根目录>\frontend'
 npm.cmd test
 .\node_modules\.bin\tsc.cmd --noEmit
 npm.cmd run build
@@ -95,7 +97,7 @@ npm.cmd run build
 后端397项已由用户在上一批本机验证通过，本批没有修改后端，也没有在已知受限环境重复执行异步回归。如需完整复验：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+Set-Location '<项目根目录>'
 $cardTestTemp = Join-Path (Get-Location) '.cache\card-management-test-temp'
 New-Item -ItemType Directory -Force -Path $cardTestTemp | Out-Null
 $cardOldTemp = $env:TEMP

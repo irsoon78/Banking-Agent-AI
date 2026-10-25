@@ -1,5 +1,7 @@
 # Banking-Agent-AI 项目正式存档｜2026-10-23
 
+> 历史记录说明：本文保留阶段开发时的测试数量、待验收及未提交状态，不代表v0.4.1的发布结果。当前部署见[根README](../README.md)，本次实测见[发布说明](RELEASE_NOTES_v0.4.1.md)。命令中的`<项目根目录>`须替换为实际解压/克隆目录。
+
 本存档记录比赛Demo第四阶段MVP的代码、安全边界、自动化回归及用户报告的真实模型人工验收。项目以自然语言理解、可信工具调用及服务端授权协作为目标，不是真实银行服务，不连接真实资金或银行卡支付网络。比赛截止日期2026-11-02由用户提供；本档不扩展或编造官方要求。
 
 截至本次归档，四个阶段核心闭环已实现。理财、订阅管理、真实身份认证及强验证放行仍未实现，不能将整个参赛作品描述为全部完成。
@@ -10,18 +12,18 @@
 |---|---|
 |开发分支|feature/cross-scenario-v0.1|
 |开发前HEAD/父稳定版本|9544cbcd19523012fe5d97686169c4a6323e8a2e，第三阶段银行卡管理|
-|本次稳定提交|包含本存档的提交，提交说明为`feat: complete cross-scenario investigation MVP`|
-|最终Commit ID定位|使用下方只读命令解析；完整SHA同时记录于本轮交付报告|
+|原始归档稳定提交|6f36a32cb10ef0a1381f8d385ff36678590cce2d，提交说明为`feat: complete cross-scenario investigation MVP`|
+|Commit ID定位|下方命令明确使用原始归档提交；后续文档修订不改变该历史基线|
 |GitHub远端|origin，既有Banking-Agent-AI仓库；本轮未改动远端配置|
 |第四阶段GitHub备份|未完成；HTTPS连接失败后，用户明确选择“本轮只保留本地提交”，已停止发布动作|
 |稳定标签|本轮未创建、未推送；原计划名称为`v0.4.0-cross-scenario-mvp`，后续发布前须重新检查本地及远端是否占用|
 |其他分支/历史|不合并、不重写前三阶段提交、不移动已有标签|
 
-本档随稳定提交一起创建，不能在同一文件内硬编码其所属提交自身的SHA而保持该SHA不变。以下命令可准确定位包含本档的最终提交；本日期存档作为历史记录保留，不用后续编辑改写其验收结论：
+本档原始版本随第四阶段稳定提交创建。v0.4.1仅增加历史说明及修正文档命令；以下命令明确查询2026-10-23的原始归档提交，不用文档最近修改记录冒充当日稳定提交，也不改写其验收结论：
 
 ```powershell
-git log -1 --format=%H -- docs/PROJECT_ARCHIVE_2026-10-23.md
-git show --stat <上一步完整Commit-ID>
+$archiveCommit = '6f36a32cb10ef0a1381f8d385ff36678590cce2d'
+git show --stat $archiveCommit
 ```
 
 本轮网络检查不是推送成功证据。不得把之前三个阶段的GitHub备份、连接器可读或本地提交成功，表述为第四阶段已经备份。网络恢复后必须由用户再次授权并执行普通推送、核对远端SHA，再创建和推送annotated tag；禁止强推或覆盖已有标签。
@@ -214,10 +216,10 @@ npm.cmd run dev
 
 访问`http://127.0.0.1:5173/#/chat`，默认/api代理到8000。使用单worker。不要通过修改.env、重导样本或篡改状态来制造演示结果。新机器/新副本的显式离线准备、只读源库检查及拒绝覆盖的backup步骤见`docs/INVESTIGATION_DEMO.md`；原三份调查技术文档是开发时快照，当前验收状态以本档为准。
 
-需要恢复代码时，在现有库中先查询本档所属完整SHA，再选择不存在的新目录建立分离工作树，保留原工作区及数据：
+需要恢复2026-10-23的归档代码时，在现有库中使用当日原始提交，选择不存在的新目录建立分离工作树，保留原工作区及数据：
 
 ```powershell
-$archiveCommit = git log -1 --format=%H -- docs/PROJECT_ARCHIVE_2026-10-23.md
+$archiveCommit = '6f36a32cb10ef0a1381f8d385ff36678590cce2d'
 git show --stat $archiveCommit
 git worktree add --detach ..\Banking-Agent-AI-recovery-20261023 $archiveCommit
 ```

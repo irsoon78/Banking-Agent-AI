@@ -1,13 +1,16 @@
-# Banking-Agent-AI · v0.4.0-cross-scenario-mvp
+# Banking-Agent-AI · v0.4.1
 
 基于 Python、FastAPI、SQLite 和 LLM Tool Calling 的模拟银行智能体比赛 Demo。模型负责理解自然语言及受限调查规划，Python 工具提供可信业务数据，服务端独立决定风险、权限和执行条件。前端采用 React + TypeScript + Vite。
 
 当前已实现智能转账、账单智能分析、模拟银行卡管理及跨场景消费调查。**不是实际银行服务，不连接真实资金或银行卡支付网络，也没有生产级登录和持卡人认证。**
 
 - GitHub 仓库：[irsoon78/Banking-Agent-AI](https://github.com/irsoon78/Banking-Agent-AI)（访问需具备仓库权限）。
-- 稳定标签：`v0.4.0-cross-scenario-mvp`；对应提交：`6f36a32cb10ef0a1381f8d385ff36678590cce2d`。
+- 本次交付版本：`v0.4.1`，文档与源码包修订，不新增业务功能；实际本地标签/远端发布结果以Git查询及交付报告为准。
+- 保留原稳定标签：`v0.4.0-cross-scenario-mvp` → `6f36a32cb10ef0a1381f8d385ff36678590cce2d`。
+- 修订起点：`f4349a8010a30e2baafa54b825e41fd156263fac`（新版README提交）。
+- [v0.4.1发布说明](docs/RELEASE_NOTES_v0.4.1.md)：本次实测、包验证及已知限制。
 - 当前开发分支：`feature/cross-scenario-v0.1`。
-- 版本标识说明：上述为项目稳定标签；`main.py` 的 FastAPI/OpenAPI 版本、前端页眉仍显示 `V0.3.0`，`frontend/package.json` 仍为 `0.1.0`，尚未统一，不代表缺少第四阶段功能。
+- 版本标识说明：上述为项目稳定标签；`main.py` 的 FastAPI/OpenAPI 版本、前端页眉仍显示 `V0.3.0`，`frontend/package.json` 仍为 `0.1.0`，它们是沿用的组件标识，与整体交付版本分开；本次没有修改组件或业务版本字段。
 - [项目正式存档（2026-10-23）](docs/PROJECT_ARCHIVE_2026-10-23.md)保留当时验收及发布状态；后续本地标签或远端状态应以实际 Git 查询为准。
 
 ## 1. 当前功能与安全策略
@@ -74,32 +77,47 @@ Banking-Agent-AI/
 
 ## 3. 环境与首次配置
 
-已验证运行环境：Windows PowerShell、Python **3.14.7**、Node.js **24.22.0**。Python源码使用3.10及以上语法；其他组合未逐一验收。Vite 7要求 Node.js `^20.19.0 || >=22.12.0`，前端测试还需要支持 `--experimental-strip-types`，建议复用已验证的Node 24环境。
+已验证运行环境：Windows PowerShell、Python **3.14.7**、Node.js **24.22.0**。requirements.txt的直接依赖要求Python **>=3.10**，其他Python组合未逐一验收。Vite 7要求 Node.js `^20.19.0 || >=22.12.0`，前端测试还需要支持 `--experimental-strip-types`，建议复用已验证的Node 24环境。
 
 以下命令均为操作说明；**已有虚拟环境、依赖和.env时跳过首次准备，不重复安装或覆盖配置。**
 
 首次获取源码可使用以下命令，在存放项目的父目录执行；不要在已有项目目录内再次克隆：
 
 ```powershell
-git clone --branch v0.4.0-cross-scenario-mvp https://github.com/irsoon78/Banking-Agent-AI.git Banking-Agent-AI
+git clone --branch v0.4.1 https://github.com/irsoon78/Banking-Agent-AI.git Banking-Agent-AI
 Set-Location .\Banking-Agent-AI
 ```
 
 需远端已发布该标签且当前Git身份可访问仓库；按标签克隆处于分离HEAD，适合运行，不在此说明中切换开发分支。如果远端不可达或标签不存在，停止检查，不重置当前工作区。
 
-本机现有项目根目录为：
+从源码包解压得到顶层`Banking-Agent-AI/`；以下`<项目根目录>`须替换为该目录的实际路径（克隆目录同理），不要原样执行占位符：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+Set-Location '<项目根目录>'
 ```
 
-以下启动和测试代码块使用该路径。其他机器请替换为实际克隆目录，前端使用其 `frontend` 子目录。
+在项目根目录可看到main.py、requirements.txt和frontend目录。后端终端进入根目录，前端终端进入其frontend子目录；启动不依赖开发者电脑的路径。
 
 仅首次在项目根目录准备后端：
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+$bankSetupTemp = Join-Path (Get-Location).Path '.cache\setup-temp'
+New-Item -ItemType Directory -Force -Path $bankSetupTemp | Out-Null
+$bankSetupPrevious = @{}
+foreach ($name in @('TEMP', 'TMP', 'TMPDIR')) {
+    $bankSetupPrevious[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+    [Environment]::SetEnvironmentVariable($name, $bankSetupTemp, 'Process')
+}
+try {
+    python -m venv .venv
+    if ($LASTEXITCODE -ne 0) { throw '虚拟环境创建失败，保留错误，不覆盖已有环境。' }
+    .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+    if ($LASTEXITCODE -ne 0) { throw '依赖安装失败，请保留错误信息。' }
+} finally {
+    foreach ($name in $bankSetupPrevious.Keys) {
+        [Environment]::SetEnvironmentVariable($name, $bankSetupPrevious[$name], 'Process')
+    }
+}
 if (-not (Test-Path -LiteralPath '.env')) {
     Copy-Item -LiteralPath '.env.example' -Destination '.env' -ErrorAction Stop
 }
@@ -120,7 +138,7 @@ if (-not (Test-Path -LiteralPath '.env')) {
 仅首次在前端目录使用现有锁文件安装依赖：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI\frontend'
+Set-Location '<项目根目录>\frontend'
 npm.cmd ci
 ```
 
@@ -145,7 +163,7 @@ npm.cmd ci
 在终端A执行：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+Set-Location '<项目根目录>'
 $bankRunDb = Join-Path (Get-Location).Path 'database\banking.db'
 $bankPreviousDb = $env:BANK_DB_PATH
 try {
@@ -162,7 +180,7 @@ try {
 在终端A执行。路径不存在即停止；不要去掉检查后让SQLite创建空库，也不要为重现截图重导样本、重置余额或篡改卡片状态。
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+Set-Location '<项目根目录>'
 $bankDemoDb = (Resolve-Path -LiteralPath '.cache\cross-scenario-demo\banking.db' -ErrorAction Stop).Path
 if (-not (Test-Path -LiteralPath $bankDemoDb -PathType Leaf)) {
     throw '独立演示数据库不存在或不是文件，停止启动。'
@@ -185,7 +203,7 @@ try {
 - 若是全新克隆且没有任何演示库，可由用户明确执行下面的**首次离线初始化**。目标必须尚不存在，不能指向.env/当前进程选中的数据库；不要在服务启动、聊天或普通查询中调用它。
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+Set-Location '<项目根目录>'
 if (Test-Path -LiteralPath '.cache\cross-scenario-demo\banking.db') {
     throw '目标已存在，禁止覆盖或重新初始化；请使用已有库。'
 }
@@ -200,7 +218,7 @@ if ($LASTEXITCODE -ne 0) { throw '离线初始化失败，保留现场，不删�
 另开终端B，使用已有依赖：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI\frontend'
+Set-Location '<项目根目录>\frontend'
 npm.cmd run dev
 ```
 
@@ -219,7 +237,7 @@ Vite将 `/api/*` 代理到 `http://127.0.0.1:8000/*` 并去掉 `/api` 前缀。*
 构建预览（不是必需启动步骤）：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI\frontend'
+Set-Location '<项目根目录>\frontend'
 npm.cmd run build
 npm.cmd run preview
 ```
@@ -302,22 +320,22 @@ npm.cmd run preview
 
 ## 7. 测试与验证记录
 
-稳定提交的完整回归于 **2026-10-23** 实际执行并通过，详见[正式存档](docs/PROJECT_ARCHIVE_2026-10-23.md)：
+以下为 **v0.4.1于2026-10-25的开发仓库实测**；源码包解压验证单独记录于[发布说明](docs/RELEASE_NOTES_v0.4.1.md)，不混用两个环境的结果：
 
 | 检查 | 已记录结果 |
 | --- | --- |
-| 后端完整unittest | 539通过，0失败、0错误、0跳过；79.550秒 |
-| 前端完整测试 | 93通过，0失败、0跳过 |
+| 后端完整unittest | 539通过，0失败、0错误、0跳过；60.220秒 |
+| 前端完整测试 | 93通过，0失败、0取消、0跳过；851.4951毫秒 |
 | TypeScript `tsc --noEmit` | 通过 |
 | Vite生产构建 | 通过 |
-| `git diff --check` | 通过 |
+| `git diff --check` | 本次文档及提交前检查通过 |
 
-后端使用独立临时SQLite和模拟模型/SDK，前端使用模拟fetch、React静态渲染与共享状态控制器。它们不等同于真实模型或浏览器端到端验收。用户另行完成真实DeepSeek规划（4次PLAN_ACCEPTED）、异常证据、卡片关联、覆盖不足、历史恢复及无自动处置的浏览器验收。**本次README更新不重新执行完整回归、不调用真实模型，仅检查文档与源码/存档一致性。**
+后端使用独立临时SQLite和模拟模型/SDK，前端使用模拟fetch、React静态渲染与共享状态控制器。它们不等同于真实模型或浏览器端到端验收。用户另行完成真实DeepSeek规划（4次PLAN_ACCEPTED）、异常证据、卡片关联、覆盖不足、历史恢复及无自动处置的浏览器验收。**此前真实模型验收属于历史证据，本次不重复调用真实DeepSeek。2026-10-23存档测试是历史记录，不能替代本次发布或解压包测试。功能回归及静态扫描不是第三方安全审计。**
 
 完整后端回归：在单独终端执行，临时变量只作用于进程并在finally恢复。新建独立测试目录；不使用演示库测试写操作。
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+Set-Location '<项目根目录>'
 $bankTestRoot = Join-Path (Get-Location).Path ('.cache\readme-regression-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $bankTestRoot -ErrorAction Stop | Out-Null
 $bankTestPrevious = @{}
@@ -342,7 +360,7 @@ try {
 前端回归及生产构建：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI\frontend'
+Set-Location '<项目根目录>\frontend'
 npm.cmd test
 if ($LASTEXITCODE -ne 0) { throw '前端测试未通过。' }
 .\node_modules\.bin\tsc.cmd --noEmit
@@ -366,6 +384,7 @@ if ($LASTEXITCODE -ne 0) { throw '生产构建未通过。' }
 | 普通库没有消费、卡片或数据集 | 普通启动只建基础库。核对启动日志中的BANK_DB_PATH，使用正确的独立演示库，不向普通库自动导入 |
 | SQLite无法打开、权限或锁错误 | 确认显式路径、父目录权限、磁盘及旧进程；演示路径必须存在，停止并保留错误，不管理员绕过、不删库、不改余额 |
 | 测试临时目录权限失败 | 用上文独立.cache测试目录及进程级TEMP/TMP/TMPDIR，确认可写；不能用业务库代替临时库 |
+| 新虚拟环境在ensurepip阶段失败 | 本次解压验证曾遇到此问题；部署准备使用上文进程级独立临时目录。只对本次新建的未完成虚拟环境可在同样临时目录下执行`.\.venv\Scripts\python.exe -B -m ensurepip --upgrade`，失败则停止，不覆盖开发虚拟环境或改系统权限 |
 | 会话丢失、任务过期或卡片版本冲突 | 核对服务是否重启、空闲是否超过20分钟、卡片任务是否超过5分钟；查询状态后重新发起，不自动确认或重发 |
 | 10月整月显示覆盖不足 | 正常样本边界：仅有1—20日；不能补造数据或将21—31日当零消费 |
 | 历史报告不能恢复 | 检查是否选中同一数据库和账户；快照保存失败或库被换掉时不能保证恢复，不把GET改为隐式重新调查 |

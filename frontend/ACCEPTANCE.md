@@ -1,8 +1,10 @@
 # 前端 V0.1 验收记录
 
+> 历史记录说明：本文保留阶段开发时的测试数量、待验收及未提交状态，不代表v0.4.1的发布结果。当前部署见[根README](../README.md)，本次实测见[发布说明](../docs/RELEASE_NOTES_v0.4.1.md)。命令中的`<项目根目录>`须替换为实际解压/克隆目录。
+
 日期：2026-10-18（Asia/Shanghai）。分支：`feature/frontend-v0.1`。
 
-环境：Windows 本机 `C:\Users\Irsoon\nodejs\node.exe` v24.22.0、npm 11.19.1。没有安装或升级系统 Node/npm。
+环境：Windows 本机 `PATH中的node.exe` v24.22.0、npm 11.19.1。没有安装或升级系统 Node/npm。
 
 前端通过 Vite `/api` 代理真实连接 `http://127.0.0.1:8000`。后端使用项目现有虚拟环境运行，健康检查返回 `ok`、`llm_configured: true`。没有 mock 正式 API。后端源码、`.env` 和 Key 未修改；余额/账单/审计仅通过真实演示 API 自然更新，没有手工写库或重置演示数据。
 

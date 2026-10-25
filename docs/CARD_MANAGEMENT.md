@@ -1,5 +1,7 @@
 # 模拟银行卡：数据与安全执行链（第一、二批）
 
+> 历史记录说明：本文保留阶段开发时的测试数量、待验收及未提交状态，不代表v0.4.1的发布结果。当前部署见[根README](../README.md)，本次实测见[发布说明](RELEASE_NOTES_v0.4.1.md)。命令中的`<项目根目录>`须替换为实际解压/克隆目录。
+
 第一批建立独立模型、离线样本、只读服务与纯状态核心；第二批已接入 Agent、只读 HTTP 查询、原有确认管理器及事务审计。没有开发新前端页面。卡片状态只表示模拟数据，不控制真实银行卡，也不拦截既有转账或重算消费。当前账户隔离不是生产持卡人身份认证。
 
 ## 数据模型
@@ -129,7 +131,7 @@ Agent 只将服务端唯一匹配到的内部 card_id 与枚举工具名放入�
 PowerShell 完整回归命令（只为该 Python 子进程临时设置环境，退出后恢复）：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+Set-Location '<项目根目录>'
 $cardTestTemp = Join-Path (Get-Location) '.cache\card-management-test-temp'
 New-Item -ItemType Directory -Force -Path $cardTestTemp | Out-Null
 $cardOldTemp = $env:TEMP

@@ -1,5 +1,7 @@
 # 第四阶段第三批：调查界面与比赛演示
 
+> 历史记录说明：本文保留阶段开发时的测试数量、待验收及未提交状态，不代表v0.4.1的发布结果。当前部署见[根README](../README.md)，本次实测见[发布说明](RELEASE_NOTES_v0.4.1.md)。命令中的`<项目根目录>`须替换为实际解压/克隆目录。
+
 本批只开发React界面、API类型和只读查询状态管理，没有修改后端、风控、确认机制或现有数据库。真实DeepSeek和浏览器人工验收由用户执行；自动化使用模拟fetch、真实React静态渲染及Vite转换，不消耗模型额度。
 
 ## 页面与调用链
@@ -36,7 +38,7 @@
 先在项目根目录只读检查已有银行卡演示库：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+Set-Location '<项目根目录>'
 @'
 from contextlib import closing
 from pathlib import Path
@@ -85,7 +87,7 @@ print('仅新建独立副本:', target)
 启动后端，BANK_DB_PATH仅在当前PowerShell进程临时生效；Ctrl+C退出后恢复。单worker，不启用reload：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI'
+Set-Location '<项目根目录>'
 $invDb = (Resolve-Path '.cache\cross-scenario-demo\banking.db' -ErrorAction Stop).Path
 $invPreviousDb = $env:BANK_DB_PATH
 try {
@@ -101,7 +103,7 @@ try {
 另开PowerShell启动前端，复用已有依赖，不执行npm install：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI\frontend'
+Set-Location '<项目根目录>\frontend'
 npm.cmd run dev
 ```
 
@@ -112,7 +114,7 @@ npm.cmd run dev
 前端命令（已有依赖）：
 
 ```powershell
-Set-Location 'E:\GPT\2026-10-14\python-ai-agent-banking-agent-llm-2\outputs\Banking-Agent-AI\frontend'
+Set-Location '<项目根目录>\frontend'
 npm.cmd test
 npm.cmd run build
 ```
